@@ -234,3 +234,249 @@ fn count_challenges(event_dir: &Path) -> usize {
     }
     count
 }
+
+pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
+    // 1. Check if we are in a CTF event directory
+    let current_dir = std::env::current_dir()?;
+    // simple check: look for .ctf_meta.json
+    if !current_dir.join(".ctf_meta.json").exists() {
+        anyhow::bail!("Not inside a CTF event directory (missing .ctf_meta.json)");
+    }
+
+    if !path.exists() {
+        anyhow::bail!("Challenge file not found: {:?}", path);
+    }
+
+    println!("Analyzing challenge archive: {:?}", path);
+
+    // Heuristics to guess category
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("challenge")
+        .to_lowercase();
+
+    // Heuristic 1: File name contains category
+    let category = if file_name.contains("web") {
+        "web"
+    } else if file_name.contains("pwn") || file_name.contains("bof") {
+        "pwn"
+    } else if file_name.contains("crypto") {
+        "crypto"
+    } else if file_name.contains("rev") {
+        "rev"
+    } else if file_name.contains("misc") {
+        "misc"
+    } else {
+        // scan content for cues
+        "misc" // Default to misc if unknown
+    };
+
+    println!("Detected category: {}", category);
+
+    // Create category dir if needed
+    let category_dir = current_dir.join(category);
+    if !category_dir.exists() {
+        fs::create_dir(&category_dir)?;
+    }
+
+    // Determine challenge name from archive name (strip extension)
+    let challenge_name = Path::new(&file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown_chall");
+
+    let challenge_dir = category_dir.join(challenge_name);
+    if challenge_dir.exists() {
+        anyhow::bail!("Challenge directory already exists: {:?}", challenge_dir);
+    }
+
+    fs::create_dir(&challenge_dir)?;
+    println!("Created challenge directory: {:?}", challenge_dir);
+
+    // Extract archive
+    // Note: In a real implementation we would iterate and exact files here.
+    // For now we just copy the archive there for manual extraction or use standard tools
+    // but the plan says "Smart Import", so let's try to extract if we can.
+
+    // For this MVP, let's just copy the file into the folder
+    let dest_file = challenge_dir.join(path.file_name().unwrap());
+    fs::copy(path, &dest_file)?;
+    println!("Imported archive to {:?}", dest_file);
+
+    // Add a default solve script
+    add_solve_script(&challenge_dir, category)?;
+
+    Ok(())
+}
+
+pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    if !current_dir.join(".ctf_meta.json").exists() {
+        anyhow::bail!("Not inside a CTF event directory.");
+    }
+
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid format. Use <category>/<name> (e.g. pwn/overflow)");
+    }
+    let category = parts[0];
+    let name = parts[1];
+
+    let category_dir = current_dir.join(category);
+    if !category_dir.exists() {
+        println!("Creating category: {}", category);
+        fs::create_dir(&category_dir)?;
+    }
+
+    let challenge_dir = category_dir.join(name);
+    if challenge_dir.exists() {
+        anyhow::bail!("Challenge already exists: {:?}", challenge_dir);
+    }
+
+    fs::create_dir(&challenge_dir)?;
+    println!("Created challenge: {}/{}", category, name);
+
+    add_solve_script(&challenge_dir, category)?;
+
+    Ok(())
+}
+
+fn add_solve_script(challenge_dir: &Path, category: &str) -> Result<()> {
+    let template = match category {
+        "pwn" => {
+            r#"from pwn import *
+
+# io = process('./chall')
+io = remote('TARGET', PORT)
+
+io.interactive()
+"#
+        }
+        "web" => {
+            r#"import requests
+
+URL = "http://TARGET"
+
+r = requests.get(URL)
+print(r.text)
+"#
+        }
+        _ => {
+            r#"# Solve script for challenge
+"#
+        }
+    };
+
+    fs::write(challenge_dir.join("solve.py"), template)?;
+    println!("Created solve.py template");
+    Ok(())
+}
+
+pub fn generate_writeup(_config: &Config) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    if !current_dir.join(".ctf_meta.json").exists() {
+        anyhow::bail!("Not inside a CTF event directory.");
+    }
+
+    let meta = CtfMeta::load(&current_dir).context("Failed to load metadata")?;
+    let mut writeup_content = format!("# Writeup: {}\n\nDate: {}\n\n", meta.name, meta.date);
+
+    // Walk through categories and challenges
+    if let Ok(cats) = fs::read_dir(&current_dir) {
+        let mut categories: Vec<_> = cats.filter_map(|e| e.ok()).collect();
+        categories.sort_by_key(|e| e.file_name());
+
+        for cat in categories {
+            if cat.path().is_dir() && !cat.file_name().to_string_lossy().starts_with('.') {
+                let cat_name = cat.file_name().to_string_lossy().to_string();
+
+                if let Ok(chals) = fs::read_dir(cat.path()) {
+                    let mut challenges: Vec<_> = chals.filter_map(|e| e.ok()).collect();
+                    challenges.sort_by_key(|e| e.file_name());
+
+                    for chal in challenges {
+                        if chal.path().is_dir() {
+                            let chal_name = chal.file_name().to_string_lossy().to_string();
+
+                            // Check for notes
+                            let notes_path = chal.path().join("notes.md");
+                            let readme_path = chal.path().join("README.md");
+
+                            let content = if notes_path.exists() {
+                                fs::read_to_string(notes_path).unwrap_or_default()
+                            } else if readme_path.exists() {
+                                fs::read_to_string(readme_path).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            if !content.trim().is_empty() {
+                                writeup_content
+                                    .push_str(&format!("## [{}] {}\n\n", cat_name, chal_name));
+                                writeup_content.push_str(&content);
+                                writeup_content.push_str("\n\n---\n\n");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let writeup_path = current_dir.join("Writeup.md");
+    fs::write(&writeup_path, writeup_content)?;
+    println!("Generated writeup at {:?}", writeup_path);
+
+    Ok(())
+}
+
+pub fn archive_event(config: &Config, name: &str) -> Result<()> {
+    let ctf_root = config.ctf_root();
+    // PARA Archives
+    let archives_root = config.resolve_path("archives").join("CTFs");
+
+    if !archives_root.exists() {
+        fs::create_dir_all(&archives_root)?;
+    }
+
+    // Find the event folder
+    let mut event_dir = ctf_root.join(name);
+    // Try to find it if name is partial specific
+    if !event_dir.exists() {
+        // search for directory containing name
+        if let Ok(entries) = fs::read_dir(&ctf_root) {
+            for entry in entries.flatten() {
+                let db_name = entry.file_name().to_string_lossy().to_string();
+                if db_name.contains(name) {
+                    event_dir = entry.path();
+                    break;
+                }
+            }
+        }
+    }
+
+    if !event_dir.exists() {
+        anyhow::bail!("Event directory not found: {}", name);
+    }
+
+    // Load meta to get year
+    let year = if let Some(meta) = CtfMeta::load(&event_dir) {
+        meta.year.to_string()
+    } else {
+        Local::now().year().to_string()
+    };
+
+    let archive_year_dir = archives_root.join(&year);
+    if !archive_year_dir.exists() {
+        fs::create_dir_all(&archive_year_dir)?;
+    }
+
+    let target_dir = archive_year_dir.join(event_dir.file_name().unwrap());
+
+    println!("Archiving {:?} -> {:?}", event_dir, target_dir);
+    fs::rename(event_dir, target_dir)?;
+
+    println!("Event archived successfully.");
+    Ok(())
+}

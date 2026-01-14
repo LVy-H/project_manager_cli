@@ -4,7 +4,7 @@ use log::{error, info, warn};
 use std::path::PathBuf;
 use wardex::config::Config;
 use wardex::core::watcher;
-use wardex::engine::{auditor, cleaner, ctf, search, status, undo};
+use wardex::engine::{auditor, cleaner, ctf, dev, scaffold, search, stats, status, undo};
 
 #[derive(Parser)]
 #[command(name = "wardex")]
@@ -19,7 +19,51 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum CtfCommands {
+    /// Initialize a new CTF event
+    Init {
+        name: String,
+        #[arg(long, help = "YYYY-MM-DD")]
+        date: Option<String>,
+    },
+    /// List CTF events
+    List,
+    /// smart import a challenge archive
+    Import {
+        #[arg(help = "Path to challenge zip/tar")]
+        file: PathBuf,
+    },
+    /// Add a new challenge to current event
+    Add {
+        #[arg(help = "Category/Name (e.g. pwn/stack-buffer)")]
+        path: String,
+    },
+    /// Generate writeup from notes
+    Writeup,
+    /// Archive an event to 4_Archives
+    Archive {
+        #[arg(help = "Name of the event to archive")]
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevCommands {
+    /// Initialize .devcontainer
+    Init,
+    /// List docker images
+    Images,
+}
+
+#[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new project
+    Init {
+        #[arg(short, long, help = "Project type (rust, python, node)")]
+        type_: String,
+        #[arg(short, long, help = "Project name")]
+        name: String,
+    },
     /// Sort items from Inbox into Projects/Resources
     Clean {
         #[arg(long, help = "Simulate moves without executing")]
@@ -29,6 +73,11 @@ enum Commands {
     Ctf {
         #[command(subcommand)]
         command: CtfCommands,
+    },
+    /// Developer utilities
+    Dev {
+        #[command(subcommand)]
+        command: DevCommands,
     },
     /// Audit workspace health (files, empty folders)
     Audit,
@@ -48,18 +97,14 @@ enum Commands {
         #[arg(short, long)]
         pattern: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-enum CtfCommands {
-    /// Initialize a new CTF event
-    Init {
-        name: String,
-        #[arg(long, help = "YYYY-MM-DD")]
-        date: Option<String>,
-    },
-    /// List CTF events
-    List,
+    /// Fuzzy find projects
+    Find { name: String },
+    /// Grep Content in Projects/Resources
+    Grep { pattern: String },
+    /// Show workspace analytics
+    Stats,
+    /// Quick file/project info
+    Info { path: Option<PathBuf> },
 }
 
 /// Search for config file in priority order
@@ -75,7 +120,7 @@ fn find_config(cli_path: &Option<PathBuf>) -> Result<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Some(config_dir) = dirs::config_dir() {
-        candidates.push(config_dir.join("foldermanager/config.yaml"));
+        candidates.push(config_dir.join("wardex/config.yaml"));
     }
     candidates.push(PathBuf::from("config.yaml"));
 
@@ -104,6 +149,9 @@ fn main() -> Result<()> {
     let config = Config::load_from_file(&config_path)?;
 
     match &cli.command {
+        Commands::Init { type_, name } => {
+            scaffold::init_project(&config, name, type_)?;
+        }
         Commands::Clean { dry_run } => {
             let report = cleaner::clean_inbox(&config, *dry_run)?;
 
@@ -192,6 +240,26 @@ fn main() -> Result<()> {
                 if result.events.iter().any(|e| !e.has_metadata) {
                     log::debug!("* Events without metadata file");
                 }
+            }
+            CtfCommands::Import { file } => {
+                ctf::import_challenge(&config, file)?;
+            }
+            CtfCommands::Add { path } => {
+                ctf::add_challenge(&config, path)?;
+            }
+            CtfCommands::Writeup => {
+                ctf::generate_writeup(&config)?;
+            }
+            CtfCommands::Archive { name } => {
+                ctf::archive_event(&config, &name)?;
+            }
+        },
+        Commands::Dev { command } => match command {
+            DevCommands::Init => {
+                dev::init_devcontainer()?;
+            }
+            DevCommands::Images => {
+                dev::list_images()?;
             }
         },
         Commands::Audit => {
@@ -339,6 +407,52 @@ fn main() -> Result<()> {
                 for e in report.errors.iter().take(5) {
                     log::debug!("  - {}", e);
                 }
+            }
+        }
+        Commands::Find { name } => {
+            let results = search::find_project(&config, name)?;
+            if results.is_empty() {
+                warn!("No projects found matching '{}'", name);
+            } else {
+                println!("{:<50} {:<10}", "Project Path", "Score");
+                println!("{}", "-".repeat(60));
+                for res in results.iter().take(10) {
+                    println!("{:<50} {}", res.path.display(), res.score);
+                }
+            }
+        }
+        Commands::Grep { pattern } => {
+            info!("Grepping in Projects & Resources...");
+            let matches = search::content_search(&config, pattern)?;
+
+            for m in &matches {
+                println!(
+                    "{}:{}: {}",
+                    m.file_path,
+                    m.line_number.unwrap_or(0),
+                    m.matched_text
+                );
+            }
+            info!("Found {} matches.", matches.len());
+        }
+        Commands::Stats => {
+            let stats = stats::get_stats(&config)?;
+            stats::print_stats(&stats);
+        }
+        Commands::Info { path } => {
+            // Basic info for now, can extend to "Project Info" later
+            let target = path.clone().unwrap_or_else(|| PathBuf::from("."));
+            info!("Info for: {:?}", target);
+            if target.exists() {
+                let meta = std::fs::metadata(&target)?;
+                println!(
+                    "Type: {:?}",
+                    if target.is_dir() { "Directory" } else { "File" }
+                );
+                println!("Size: {} bytes", meta.len());
+                println!("Modified: {:?}", meta.modified()?);
+            } else {
+                error!("Path not found");
             }
         }
     }

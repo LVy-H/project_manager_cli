@@ -18,6 +18,9 @@ pub struct Paths {
     pub workspace: PathBuf,
     pub inbox: PathBuf,
     pub projects: PathBuf,
+    pub areas: Option<PathBuf>,
+    pub resources: Option<PathBuf>,
+    pub archives: Option<PathBuf>,
     /// Explicit CTF root path (optional, defaults to projects/CTFs)
     pub ctf_root: Option<PathBuf>,
     /// Additional custom paths for rules
@@ -103,6 +106,21 @@ impl Config {
             "workspace" => self.paths.workspace.clone(),
             "inbox" => self.paths.inbox.clone(),
             "projects" => self.paths.projects.clone(),
+            "areas" => self
+                .paths
+                .areas
+                .clone()
+                .unwrap_or_else(|| self.paths.workspace.join("2_Areas")),
+            "resources" => self
+                .paths
+                .resources
+                .clone()
+                .unwrap_or_else(|| self.paths.workspace.join("3_Resources")),
+            "archives" => self
+                .paths
+                .archives
+                .clone()
+                .unwrap_or_else(|| self.paths.workspace.join("4_Archives")),
             "ctf_root" => self.ctf_root(),
             _ => {
                 // Check custom paths

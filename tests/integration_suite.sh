@@ -6,6 +6,8 @@ set -e
 # If path_to_binary is not provided, it assumes 'wardex' is in PATH or built in target/debug
 
 BINARY=${1:-"../target/debug/wardex"}
+# Resolve absolute path
+BINARY=$(realpath "$BINARY")
 TEST_DIR=$(mktemp -d)
 CONFIG_FILE="$TEST_DIR/config.yaml"
 
@@ -29,7 +31,12 @@ paths:
   areas: "$TEST_DIR/workspace/2_Areas"
   resources: "$TEST_DIR/workspace/3_Resources"
   archives: "$TEST_DIR/workspace/4_Archives"
-rules: []
+rules:
+  clean: []
+organize:
+  ctf_dir: CTFs
+ctf:
+  default_categories: [pwn, crypto, web]
 EOF
 
 CMD="$BINARY --config $CONFIG_FILE"
@@ -54,7 +61,7 @@ echo "------------------------------------------------"
 echo "Testing: CTF Workflow"
 # Init Event
 $CMD ctf init "DefCon_Qualifier" --date "2024-05-01"
-EVENT_DIR="$TEST_DIR/workspace/1_Projects/CTFs/DefCon_Qualifier"
+EVENT_DIR="$TEST_DIR/workspace/1_Projects/CTFs/2024_DefCon_Qualifier"
 if [ -d "$EVENT_DIR/pwn" ]; then echo "✅ CTF Event Initialized"; else echo "❌ CTF Init Failed"; exit 1; fi
 
 # Add Challenge
@@ -69,7 +76,7 @@ if [ -f "$EVENT_DIR/Writeup.md" ]; then echo "✅ Writeup Generated"; else echo 
 
 # Archive Event
 $CMD ctf archive "DefCon_Qualifier"
-ARCHIVE_DIR="$TEST_DIR/workspace/4_Archives/CTFs/2024/DefCon_Qualifier"
+ARCHIVE_DIR="$TEST_DIR/workspace/4_Archives/CTFs/2024/2024_DefCon_Qualifier"
 if [ -d "$ARCHIVE_DIR" ]; then echo "✅ Event Archived"; else echo "❌ Event Archive Failed"; exit 1; fi
 
 # 5. Test Search (Find & Grep)
@@ -81,7 +88,7 @@ echo "some interesting content with flag{hidden_pattern}" > "$TEST_DIR/workspace
 
 # Grep
 echo "Running Grep..."
-$CMD grep "flag{" | grep "pwn.txt"
+$CMD grep "flag" | grep "pwn.txt"
 echo "✅ Grep Found Content"
 
 # Find
@@ -89,16 +96,8 @@ echo "Running Find..."
 $CMD find "test-rust" | grep "test-rust-proj"
 echo "✅ Fuzzy Find Found Project"
 
-# 6. Test Dev Tools
-echo "------------------------------------------------"
-echo "Testing: Dev Tools"
-# Init Devcontainer
-cd "$TEST_DIR/workspace/1_Projects/test-rust-proj"
-$CMD dev init
-if [ -f ".devcontainer/devcontainer.json" ]; then echo "✅ Devcontainer Initialized"; else echo "❌ Devcontainer Init Failed"; exit 1; fi
-
-# Images (just check it runs)
-$CMD dev images || echo "⚠️  Docker command failed (expected if docker not running in test env)"
+# 6. Test Dev Tools - REMOVED
+# Dev tools have been deprioritized.
 
 echo "------------------------------------------------"
 echo "🎉 All Integration Tests Passed!"

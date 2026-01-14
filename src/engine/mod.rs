@@ -1,7 +1,6 @@
 pub mod auditor;
 pub mod cleaner;
 pub mod ctf;
-pub mod dev;
 pub mod scaffold;
 pub mod search;
 pub mod stats;

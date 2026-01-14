@@ -4,7 +4,7 @@ use log::{error, info, warn};
 use std::path::PathBuf;
 use wardex::config::Config;
 use wardex::core::watcher;
-use wardex::engine::{auditor, cleaner, ctf, dev, scaffold, search, stats, status, undo};
+use wardex::engine::{auditor, cleaner, ctf, scaffold, search, stats, status, undo};
 
 #[derive(Parser)]
 #[command(name = "wardex")]
@@ -48,14 +48,6 @@ enum CtfCommands {
 }
 
 #[derive(Subcommand)]
-enum DevCommands {
-    /// Initialize .devcontainer
-    Init,
-    /// List docker images
-    Images,
-}
-
-#[derive(Subcommand)]
 enum Commands {
     /// Initialize a new project
     Init {
@@ -73,11 +65,6 @@ enum Commands {
     Ctf {
         #[command(subcommand)]
         command: CtfCommands,
-    },
-    /// Developer utilities
-    Dev {
-        #[command(subcommand)]
-        command: DevCommands,
     },
     /// Audit workspace health (files, empty folders)
     Audit,
@@ -252,14 +239,6 @@ fn main() -> Result<()> {
             }
             CtfCommands::Archive { name } => {
                 ctf::archive_event(&config, &name)?;
-            }
-        },
-        Commands::Dev { command } => match command {
-            DevCommands::Init => {
-                dev::init_devcontainer()?;
-            }
-            DevCommands::Images => {
-                dev::list_images()?;
             }
         },
         Commands::Audit => {

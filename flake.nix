@@ -81,5 +81,7 @@
           drv = self.packages.${system}.default;
         };
       }
-    );
+    ) // {
+      homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
+    };
 }

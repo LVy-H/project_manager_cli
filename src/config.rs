@@ -16,8 +16,8 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub struct Paths {
     pub workspace: PathBuf,
-    pub inbox: PathBuf,
-    pub projects: PathBuf,
+    pub inbox: Option<PathBuf>,
+    pub projects: Option<PathBuf>,
     pub areas: Option<PathBuf>,
     pub resources: Option<PathBuf>,
     pub archives: Option<PathBuf>,
@@ -104,8 +104,16 @@ impl Config {
     pub fn resolve_path(&self, key: &str) -> PathBuf {
         match key {
             "workspace" => self.paths.workspace.clone(),
-            "inbox" => self.paths.inbox.clone(),
-            "projects" => self.paths.projects.clone(),
+            "inbox" => self
+                .paths
+                .inbox
+                .clone()
+                .unwrap_or_else(|| self.paths.workspace.join("0_Inbox")),
+            "projects" => self
+                .paths
+                .projects
+                .clone()
+                .unwrap_or_else(|| self.paths.workspace.join("1_Projects")),
             "areas" => self
                 .paths
                 .areas
@@ -128,7 +136,7 @@ impl Config {
                     return PathBuf::from(path);
                 }
                 // Fallback: treat as relative path from projects
-                self.paths.projects.join(key)
+                self.resolve_path("projects").join(key)
             }
         }
     }
@@ -138,7 +146,7 @@ impl Config {
         self.paths
             .ctf_root
             .clone()
-            .unwrap_or_else(|| self.paths.projects.join("CTFs"))
+            .unwrap_or_else(|| self.resolve_path("projects").join("CTFs"))
     }
 }
 
@@ -155,9 +163,6 @@ mod tests {
             r#"
 paths:
   workspace: /home/user/workspace
-  inbox: /home/user/workspace/0_Inbox
-  projects: /home/user/workspace/1_Projects
-  ctf_root: /home/user/workspace/1_Projects/CTFs
 rules:
   clean: []
 organize:

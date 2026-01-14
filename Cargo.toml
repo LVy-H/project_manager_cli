@@ -1,0 +1,21 @@
+[package]
+name = "folder_manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.54", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yml = "0.0.12"
+regex = "1.12.2"
+walkdir = "2.5.0"
+anyhow = "1.0.100"
+colored = "3.0.0"
+tabled = { version = "0.20.0", features = ["ansi"] }
+infer = "0.19.0"
+chrono = "0.4.42"
+dirs = "6.0.0"
+rayon = "1.11.0"
+notify = "8.2.0"
+serde_json = "1.0.149"
+git2 = { version = "0.20.3", default-features = false }

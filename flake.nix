@@ -1,5 +1,5 @@
 {
-  description = "Folder Manager - A powerful CLI tool to keep your workspace organized";
+  description = "Wardex - Ward & index your workspace: CTF management, project organization, and more";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -39,7 +39,7 @@
       in {
         packages = {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "folder_manager";
+            pname = "wardex";
             version = "0.1.0";
             
             src = ./.;
@@ -54,11 +54,11 @@
             OPENSSL_NO_VENDOR = 1;
             
             meta = with pkgs.lib; {
-              description = "A powerful CLI tool to keep your workspace organized";
-              homepage = "https://github.com/LVy-H/project_manager_cli";
+              description = "Ward & index your workspace - CTF management, project organization, and more";
+              homepage = "https://github.com/LVy-H/wardex";
               license = licenses.mit;
               maintainers = [];
-              mainProgram = "folder_manager";
+              mainProgram = "wardex";
             };
           };
         };

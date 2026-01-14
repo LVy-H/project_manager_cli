@@ -1,16 +1,16 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use folder_manager::config::Config;
-use folder_manager::core::watcher;
-use folder_manager::engine::{auditor, cleaner, ctf, search, status, undo};
-use folder_manager::utils::ui;
+use log::{error, info, warn};
 use std::path::PathBuf;
+use wardex::config::Config;
+use wardex::core::watcher;
+use wardex::engine::{auditor, cleaner, ctf, search, status, undo};
 
 #[derive(Parser)]
-#[command(name = "foldermanager")]
-#[command(about = "A powerful CLI tool to keep your workspace organized.", long_about = None)]
+#[command(name = "wardex")]
+#[command(about = "Ward & index your workspace - CTF management, project organization, and more.", long_about = None)]
 struct Cli {
-    /// Path to config file (searches ~/.config/foldermanager/config.yaml if not specified)
+    /// Path to config file (searches ~/.config/wardex/config.yaml if not specified)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
@@ -62,13 +62,8 @@ enum CtfCommands {
     List,
 }
 
-/// Search for config file in priority order:
-/// 1. CLI argument (if provided)
-/// 2. $XDG_CONFIG_HOME/foldermanager/config.yaml
-/// 3. ~/.config/foldermanager/config.yaml
-/// 4. ./config.yaml (current directory)
+/// Search for config file in priority order
 fn find_config(cli_path: &Option<PathBuf>) -> Result<PathBuf> {
-    // 1. CLI argument takes priority
     if let Some(path) = cli_path {
         if path.exists() {
             return Ok(path.clone());
@@ -77,25 +72,19 @@ fn find_config(cli_path: &Option<PathBuf>) -> Result<PathBuf> {
         }
     }
 
-    // Build list of candidate paths
     let mut candidates = Vec::new();
 
-    // 2. XDG_CONFIG_HOME / ~/.config
     if let Some(config_dir) = dirs::config_dir() {
         candidates.push(config_dir.join("foldermanager/config.yaml"));
     }
-
-    // 3. Current directory
     candidates.push(PathBuf::from("config.yaml"));
 
-    // Find first existing path
     for path in &candidates {
         if path.exists() {
             return Ok(path.clone());
         }
     }
 
-    // None found, print helpful message
     let searched: Vec<String> = candidates.iter().map(|p| format!("  - {:?}", p)).collect();
     anyhow::bail!(
         "Config file not found. Searched locations:\n{}\n\nUse --config <path> to specify a config file.",
@@ -104,9 +93,13 @@ fn find_config(cli_path: &Option<PathBuf>) -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    // Initialize logger with colored output
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
+
     let cli = Cli::parse();
 
-    // Find config file
     let config_path = find_config(&cli.config)?;
     let config = Config::load_from_file(&config_path)?;
 
@@ -115,88 +108,72 @@ fn main() -> Result<()> {
             let report = cleaner::clean_inbox(&config, *dry_run)?;
 
             if report.inbox_not_found {
-                ui::print_error(&format!(
-                    "Inbox path not found: {:?}",
-                    config.resolve_path("inbox")
-                ));
+                error!("Inbox path not found: {:?}", config.resolve_path("inbox"));
                 return Ok(());
             }
 
             if report.inbox_empty {
-                ui::print_warning("Inbox is empty.");
+                warn!("Inbox is empty.");
                 return Ok(());
             }
 
-            // Display moved items
             for item in &report.moved {
                 if item.dry_run {
-                    ui::print_info(&format!(
-                        "Would move {:?} -> {:?}",
-                        item.source, item.destination
-                    ));
+                    info!("Would move {:?} -> {:?}", item.source, item.destination);
                 } else {
-                    ui::print_success(&format!(
-                        "Moved {:?} -> {:?}",
+                    info!(
+                        "✓ Moved {:?} -> {:?}",
                         item.source.file_name().unwrap_or_default(),
                         item.destination
-                    ));
+                    );
                 }
             }
 
-            // Display skipped items
             for item in &report.skipped {
-                ui::print_dim(&format!(
+                log::debug!(
                     "Skipped: {:?} ({})",
                     item.path.file_name().unwrap_or_default(),
                     item.reason
-                ));
+                );
             }
 
-            // Display errors
             for err in &report.errors {
-                ui::print_error(err);
+                error!("{}", err);
             }
 
-            ui::print_info(&format!(
-                "\nMoved: {}, Skipped: {}, Errors: {}",
+            info!(
+                "Moved: {}, Skipped: {}, Errors: {}",
                 report.moved.len(),
                 report.skipped.len(),
                 report.errors.len()
-            ));
+            );
         }
         Commands::Ctf { command } => match command {
             CtfCommands::Init { name, date } => {
                 let result = ctf::create_event(&config, name, date.clone())?;
 
                 if result.already_exists {
-                    ui::print_error(&format!(
-                        "Event directory already exists: {:?}",
-                        result.event_dir
-                    ));
+                    error!("Event directory already exists: {:?}", result.event_dir);
                 } else {
-                    ui::print_success(&format!("Initialized: {:?}", result.event_dir));
-                    ui::print_info(&format!(
-                        "  + Categories: {}",
-                        result.categories_created.join(", ")
-                    ));
-                    ui::print_info("  + File: notes.md");
-                    ui::print_info("  + Metadata: .ctf_meta.json");
+                    info!("✓ Initialized: {:?}", result.event_dir);
+                    info!("  + Categories: {}", result.categories_created.join(", "));
+                    info!("  + File: notes.md");
+                    info!("  + Metadata: .ctf_meta.json");
                 }
             }
             CtfCommands::List => {
                 let result = ctf::list_events(&config)?;
 
                 if result.ctf_root_missing {
-                    ui::print_warning("No CTF directory found.");
+                    warn!("No CTF directory found.");
                     return Ok(());
                 }
 
                 if result.events.is_empty() {
-                    ui::print_warning("No CTF events found.");
+                    warn!("No CTF events found.");
                     return Ok(());
                 }
 
-                // Print table header
                 println!(
                     "{:<30} {:<6} {:<12} {:<10}",
                     "Event", "Year", "Date", "Challenges"
@@ -213,29 +190,26 @@ fn main() -> Result<()> {
                 }
 
                 if result.events.iter().any(|e| !e.has_metadata) {
-                    ui::print_dim("\n* Events without metadata file");
+                    log::debug!("* Events without metadata file");
                 }
             }
         },
         Commands::Audit => {
-            ui::print_info("Auditing workspace...");
+            info!("Auditing workspace...");
             let report = auditor::audit_workspace(&config)?;
 
             if report.workspace_not_found {
-                ui::print_error(&format!(
+                error!(
                     "Workspace not found: {:?}",
                     config.resolve_path("workspace")
-                ));
+                );
                 return Ok(());
             }
 
-            ui::print_info(&format!("Analyzed {} items.", report.items_scanned));
+            info!("Analyzed {} items.", report.items_scanned);
 
             if !report.empty_folders.is_empty() {
-                ui::print_warning(&format!(
-                    "\nEmpty Folders Found: {}",
-                    report.empty_folders.len()
-                ));
+                warn!("Empty Folders Found: {}", report.empty_folders.len());
                 for p in report.empty_folders.iter().take(10) {
                     println!(" - {:?}", p);
                 }
@@ -245,7 +219,7 @@ fn main() -> Result<()> {
             }
 
             if !report.suspicious_extensions.is_empty() {
-                ui::print_warning("\nSuspicious Extensions (Magic Byte Mismatch):");
+                warn!("Suspicious Extensions (Magic Byte Mismatch):");
                 for item in &report.suspicious_extensions {
                     println!(
                         " - {:?} (Named: .{}, Real: .{})",
@@ -254,67 +228,63 @@ fn main() -> Result<()> {
                 }
             }
 
-            ui::print_success("\nAudit Complete.");
+            info!("✓ Audit Complete.");
         }
         Commands::Undo { count } => {
             let report = undo::undo_last(&config, *count)?;
 
             if report.no_log_found {
-                ui::print_warning("No undo log found.");
+                warn!("No undo log found.");
                 return Ok(());
             }
 
             if report.log_empty {
-                ui::print_warning("Undo log is empty.");
+                warn!("Undo log is empty.");
                 return Ok(());
             }
 
-            ui::print_info(&format!("Undoing {} operations...", report.undone.len()));
+            info!("Undoing {} operations...", report.undone.len());
 
             for item in &report.undone {
                 if item.success {
-                    ui::print_success(&format!(
-                        "Reverted: {:?} -> {:?}",
+                    info!(
+                        "✓ Reverted: {:?} -> {:?}",
                         item.source.file_name().unwrap_or_default(),
                         item.destination
-                    ));
+                    );
                 } else {
-                    ui::print_error(&format!(
-                        "Failed: {:?} ({})",
+                    error!(
+                        "✗ Failed: {:?} ({})",
                         item.source.file_name().unwrap_or_default(),
                         item.error.as_deref().unwrap_or("Unknown error")
-                    ));
+                    );
                 }
             }
 
             let success_count = report.undone.iter().filter(|i| i.success).count();
-            ui::print_info(&format!(
+            info!(
                 "Completed: {}/{} operations",
                 success_count,
                 report.undone.len()
-            ));
+            );
         }
         Commands::Watch => {
             watcher::watch_inbox(&config)?;
         }
         Commands::Status => {
-            ui::print_info(&format!(
-                "Scanning workspace: {:?}",
-                config.resolve_path("workspace")
-            ));
+            info!("Scanning workspace: {:?}", config.resolve_path("workspace"));
             let report = status::show_status(&config)?;
 
             if report.workspace_not_found {
-                ui::print_error("Workspace not found.");
+                error!("Workspace not found.");
                 return Ok(());
             }
 
             if report.repos.is_empty() {
-                ui::print_warning("No git repositories found.");
+                warn!("No git repositories found.");
                 return Ok(());
             }
 
-            // Print table header
             println!(
                 "\n{:<25} {:<12} {:<15} {}",
                 "Project", "State", "Sync", "Path"
@@ -323,9 +293,9 @@ fn main() -> Result<()> {
 
             for repo in &report.repos {
                 let state = if repo.is_dirty {
-                    format!("⚠ Dirty")
+                    "⚠ Dirty"
                 } else {
-                    format!("✓ Clean")
+                    "✓ Clean"
                 };
                 println!(
                     "{:<25} {:<12} {:<15} {}",
@@ -337,17 +307,16 @@ fn main() -> Result<()> {
             }
 
             let dirty_count = report.repos.iter().filter(|r| r.is_dirty).count();
-            ui::print_info(&format!(
-                "\nTotal: {} repos ({} dirty)",
+            info!(
+                "Total: {} repos ({} dirty)",
                 report.repos.len(),
                 dirty_count
-            ));
+            );
         }
         Commands::Search { path, pattern } => {
-            ui::print_info(&format!("Searching for flags in {:?}...", path));
+            info!("Searching for flags in {:?}...", path);
             let report = search::find_flags(path, pattern.clone())?;
 
-            // Display matches
             for m in &report.matches {
                 let location = if let Some(ref entry) = m.archive_entry {
                     format!("{} (in {})", entry, m.file_path)
@@ -356,20 +325,19 @@ fn main() -> Result<()> {
                 } else {
                     m.file_path.clone()
                 };
-                ui::print_success(&format!("{}: {}", location, m.matched_text));
+                info!("✓ {}: {}", location, m.matched_text);
             }
 
-            // Summary
-            ui::print_info(&format!(
-                "\nScanned {} files, found {} matches.",
+            info!(
+                "Scanned {} files, found {} matches.",
                 report.files_scanned,
                 report.matches.len()
-            ));
+            );
 
             if !report.errors.is_empty() {
-                ui::print_warning(&format!("{} errors occurred:", report.errors.len()));
+                warn!("{} errors occurred:", report.errors.len());
                 for e in report.errors.iter().take(5) {
-                    ui::print_dim(&format!("  - {}", e));
+                    log::debug!("  - {}", e);
                 }
             }
         }

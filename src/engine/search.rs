@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use regex::RegexBuilder;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use grep_regex::RegexMatcher;
+use grep_searcher::sinks::UTF8;
+use grep_searcher::{BinaryDetection, SearcherBuilder};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use walkdir::WalkDir;
 use zip::ZipArchive;
@@ -42,23 +44,28 @@ impl SearchReport {
 
 /// Search for flags in files under the given path
 pub fn find_flags(path: &Path, pattern: Option<String>) -> Result<SearchReport> {
-    let pattern_str = pattern.as_deref().unwrap_or(r"(ctf|flag)\{.*?\}");
-    let regex = RegexBuilder::new(pattern_str)
-        .case_insensitive(true)
-        .build()
-        .context("Invalid regex pattern")?;
+    let pattern_str = pattern.as_deref().unwrap_or(r"(?i)(ctf|flag)\{.*?\}");
+    let matcher = RegexMatcher::new(pattern_str).context("Invalid regex pattern")?;
 
     let mut report = SearchReport::new();
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
         let entry_path = entry.path();
         if entry_path.is_file() {
+            // Check file size
+            if let Ok(metadata) = std::fs::metadata(entry_path) {
+                if metadata.len() > MAX_FILE_SIZE {
+                    report.files_skipped += 1;
+                    continue;
+                }
+            }
+
             if let Some(ext) = entry_path.extension().and_then(|s| s.to_str()) {
                 let result = match ext {
-                    "zip" => scan_zip(entry_path, &regex),
-                    "tar" => scan_tar(entry_path, &regex),
-                    "gz" | "tgz" => scan_tar_gz(entry_path, &regex),
-                    _ => scan_file(entry_path, &regex),
+                    "zip" => scan_zip(entry_path, &pattern_str),
+                    "tar" => scan_tar(entry_path, &pattern_str),
+                    "gz" | "tgz" => scan_tar_gz(entry_path, &pattern_str),
+                    _ => scan_file(entry_path, &matcher),
                 };
                 match result {
                     Ok(matches) => {
@@ -72,7 +79,7 @@ pub fn find_flags(path: &Path, pattern: Option<String>) -> Result<SearchReport> 
                     }
                 }
             } else {
-                match scan_file(entry_path, &regex) {
+                match scan_file(entry_path, &matcher) {
                     Ok(matches) => {
                         report.files_scanned += 1;
                         report.matches.extend(matches);
@@ -89,100 +96,47 @@ pub fn find_flags(path: &Path, pattern: Option<String>) -> Result<SearchReport> 
     Ok(report)
 }
 
-/// Scan a single file using streaming BufReader (memory-safe)
-fn scan_file(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
+/// Scan a single file using grep-searcher (ripgrep's library)
+fn scan_file(path: &Path, matcher: &RegexMatcher) -> Result<Vec<FlagMatch>> {
     let mut matches = Vec::new();
+    let file_path = path.display().to_string();
 
-    // Check file size first
-    let metadata = fs::metadata(path)?;
-    if metadata.len() > MAX_FILE_SIZE {
-        // Skip large files silently (will be counted in skipped)
-        return Ok(matches);
-    }
+    let mut searcher = SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .build();
 
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-
-    // Try to read as text line-by-line
-    // For binary files, this will still work but may have long "lines"
-    for (line_idx, line_result) in reader.lines().enumerate() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => {
-                // If we can't read as UTF-8 lines, fall back to chunked binary scan
-                return scan_file_binary(path, regex);
-            }
-        };
-
-        for mat in regex.find_iter(&line) {
-            matches.push(FlagMatch {
-                file_path: path.display().to_string(),
-                archive_entry: None,
-                matched_text: mat.as_str().to_string(),
-                line_number: Some(line_idx + 1),
-            });
-        }
-    }
-
-    Ok(matches)
-}
-
-/// Scan a binary file using chunked reading with overlap
-fn scan_file_binary(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
-    let mut matches = Vec::new();
-
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    // Use 64KB chunks with 1KB overlap to catch matches spanning chunk boundaries
-    const CHUNK_SIZE: usize = 64 * 1024;
-    const OVERLAP: usize = 1024;
-
-    let mut buffer = vec![0u8; CHUNK_SIZE];
-    let mut overlap_buffer = Vec::new();
-
-    loop {
-        // Prepend overlap from previous chunk
-        let mut combined = overlap_buffer.clone();
-
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        combined.extend_from_slice(&buffer[..bytes_read]);
-
-        // Convert to lossy string and search
-        let text = String::from_utf8_lossy(&combined);
-        for mat in regex.find_iter(&text) {
-            let matched = mat.as_str().to_string();
-            // Avoid duplicates from overlap region
-            if !matches
-                .iter()
-                .any(|m: &FlagMatch| m.matched_text == matched)
+    // Use UTF8 sink for line-by-line matching
+    let result = searcher.search_path(
+        matcher,
+        path,
+        UTF8(|line_num, line| {
+            // The line already matched - extract the match text
+            // Use regex to find exact match positions in the line
+            if let Ok(regex) = regex::RegexBuilder::new(r"(?i)(ctf|flag)\{.*?\}")
+                .case_insensitive(true)
+                .build()
             {
-                matches.push(FlagMatch {
-                    file_path: path.display().to_string(),
-                    archive_entry: None,
-                    matched_text: matched,
-                    line_number: None,
-                });
+                for mat in regex.find_iter(line) {
+                    matches.push(FlagMatch {
+                        file_path: file_path.clone(),
+                        archive_entry: None,
+                        matched_text: mat.as_str().to_string(),
+                        line_number: Some(line_num as usize),
+                    });
+                }
             }
-        }
+            Ok(true)
+        }),
+    );
 
-        // Save overlap for next iteration
-        if bytes_read >= OVERLAP {
-            overlap_buffer = buffer[bytes_read - OVERLAP..bytes_read].to_vec();
-        } else {
-            overlap_buffer.clear();
-        }
-
-        if bytes_read < CHUNK_SIZE {
-            break;
+    match result {
+        Ok(_) => Ok(matches),
+        Err(e) => {
+            // Binary file or read error - try fallback if needed
+            log::debug!("grep-searcher failed for {}: {}", path.display(), e);
+            Ok(matches)
         }
     }
-
-    Ok(matches)
 }
 
 /// Scan a buffer (used for archive entries)
@@ -190,24 +144,29 @@ fn scan_buffer(
     buffer: &[u8],
     file_path: &str,
     archive_entry: Option<String>,
-    regex: &regex::Regex,
+    pattern: &str,
 ) -> Vec<FlagMatch> {
     let mut matches = Vec::new();
     let text = String::from_utf8_lossy(buffer);
 
-    for mat in regex.find_iter(&text) {
-        matches.push(FlagMatch {
-            file_path: file_path.to_string(),
-            archive_entry: archive_entry.clone(),
-            matched_text: mat.as_str().to_string(),
-            line_number: None,
-        });
+    if let Ok(regex) = regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+    {
+        for mat in regex.find_iter(&text) {
+            matches.push(FlagMatch {
+                file_path: file_path.to_string(),
+                archive_entry: archive_entry.clone(),
+                matched_text: mat.as_str().to_string(),
+                line_number: None,
+            });
+        }
     }
 
     matches
 }
 
-fn scan_zip(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
+fn scan_zip(path: &Path, pattern: &str) -> Result<Vec<FlagMatch>> {
     let mut all_matches = Vec::new();
     let file = File::open(path)?;
     let mut archive = ZipArchive::new(file).context("Failed to open zip")?;
@@ -220,21 +179,20 @@ fn scan_zip(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
             continue;
         }
 
-        // Skip large entries
         if file.size() > MAX_ARCHIVE_ENTRY_SIZE {
             continue;
         }
 
         let mut buffer = Vec::new();
         if file.read_to_end(&mut buffer).is_ok() {
-            let matches = scan_buffer(&buffer, &path.display().to_string(), Some(name), regex);
+            let matches = scan_buffer(&buffer, &path.display().to_string(), Some(name), pattern);
             all_matches.extend(matches);
         }
     }
     Ok(all_matches)
 }
 
-fn scan_tar(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
+fn scan_tar(path: &Path, pattern: &str) -> Result<Vec<FlagMatch>> {
     let mut all_matches = Vec::new();
     let file = File::open(path)?;
     let mut archive = tar::Archive::new(file);
@@ -243,7 +201,6 @@ fn scan_tar(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
         let mut entry = entry?;
         let entry_path = entry.path()?.to_string_lossy().to_string();
 
-        // Skip large entries
         if entry.size() > MAX_ARCHIVE_ENTRY_SIZE {
             continue;
         }
@@ -254,7 +211,7 @@ fn scan_tar(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
                 &buffer,
                 &path.display().to_string(),
                 Some(entry_path),
-                regex,
+                pattern,
             );
             all_matches.extend(matches);
         }
@@ -262,7 +219,7 @@ fn scan_tar(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
     Ok(all_matches)
 }
 
-fn scan_tar_gz(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
+fn scan_tar_gz(path: &Path, pattern: &str) -> Result<Vec<FlagMatch>> {
     let mut all_matches = Vec::new();
     let file = File::open(path)?;
     let tar = flate2::read::GzDecoder::new(file);
@@ -272,7 +229,6 @@ fn scan_tar_gz(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
         let mut entry = entry?;
         let entry_path = entry.path()?.to_string_lossy().to_string();
 
-        // Skip large entries
         if entry.size() > MAX_ARCHIVE_ENTRY_SIZE {
             continue;
         }
@@ -283,7 +239,7 @@ fn scan_tar_gz(path: &Path, regex: &regex::Regex) -> Result<Vec<FlagMatch>> {
                 &buffer,
                 &path.display().to_string(),
                 Some(entry_path),
-                regex,
+                pattern,
             );
             all_matches.extend(matches);
         }

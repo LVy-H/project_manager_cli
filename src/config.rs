@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
+use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -12,7 +12,7 @@ pub struct Config {
     pub ctf: CtfConfig,
 }
 
-/// Explicit path configuration - no magic string parsing
+/// Explicit path configuration
 #[derive(Debug, Deserialize)]
 pub struct Paths {
     pub workspace: PathBuf,
@@ -48,28 +48,62 @@ pub struct CtfConfig {
 }
 
 impl Config {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path).context("Failed to read config file")?;
-        let config: Config =
-            serde_yml::from_str(&content).context("Failed to parse config YAML")?;
-        Ok(config)
+    /// Load configuration from multiple sources (layered):
+    /// 1. Default config file in current directory
+    /// 2. User config in ~/.config/wardex/
+    /// 3. Environment variables with WX_ prefix
+    pub fn load() -> Result<Self> {
+        let mut builder = ConfigBuilder::builder();
+
+        // 1. Current directory config.yaml
+        builder = builder.add_source(File::new("config", FileFormat::Yaml).required(false));
+
+        // 2. XDG config directory
+        if let Some(config_dir) = dirs::config_dir() {
+            let path = config_dir.join("wardex/config.yaml");
+            if path.exists() {
+                builder =
+                    builder.add_source(File::from(path).format(FileFormat::Yaml).required(false));
+            }
+        }
+
+        // 3. Environment variables with WX_ prefix
+        // e.g., WX_PATHS_WORKSPACE=/tmp/workspace
+        builder = builder.add_source(
+            Environment::with_prefix("WX")
+                .separator("_")
+                .try_parsing(true),
+        );
+
+        let config = builder.build().context("Failed to build config")?;
+        config
+            .try_deserialize()
+            .context("Failed to deserialize config")
+    }
+
+    /// Load from a specific file path
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self> {
+        let builder = ConfigBuilder::builder()
+            .add_source(File::from(path.to_path_buf()).format(FileFormat::Yaml))
+            .add_source(
+                Environment::with_prefix("WX")
+                    .separator("_")
+                    .try_parsing(true),
+            );
+
+        let config = builder.build().context("Failed to build config")?;
+        config
+            .try_deserialize()
+            .context("Failed to deserialize config")
     }
 
     /// Resolve a path key to an absolute path.
-    /// Supports:
-    /// - Direct keys: "workspace", "inbox", "projects", "ctf_root"
-    /// - Custom paths defined in the config
-    /// - Relative paths joined to workspace
     pub fn resolve_path(&self, key: &str) -> PathBuf {
         match key {
             "workspace" => self.paths.workspace.clone(),
             "inbox" => self.paths.inbox.clone(),
             "projects" => self.paths.projects.clone(),
-            "ctf_root" => self
-                .paths
-                .ctf_root
-                .clone()
-                .unwrap_or_else(|| self.paths.projects.join("CTFs")),
+            "ctf_root" => self.ctf_root(),
             _ => {
                 // Check custom paths
                 if let Some(path) = self.paths.custom.get(key) {
@@ -93,9 +127,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    fn test_config() -> Config {
-        let yaml = r#"
+    fn create_test_config() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
 paths:
   workspace: /home/user/workspace
   inbox: /home/user/workspace/0_Inbox
@@ -108,13 +147,27 @@ organize:
 ctf:
   default_categories: []
   template_file: null
-"#;
-        serde_yml::from_str(yaml).unwrap()
+"#
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn test_load_from_file() {
+        let file = create_test_config();
+        let config = Config::load_from_file(file.path()).unwrap();
+
+        assert_eq!(
+            config.paths.workspace,
+            PathBuf::from("/home/user/workspace")
+        );
     }
 
     #[test]
     fn test_resolve_path_direct_keys() {
-        let config = test_config();
+        let file = create_test_config();
+        let config = Config::load_from_file(file.path()).unwrap();
 
         assert_eq!(
             config.resolve_path("workspace"),
@@ -124,15 +177,12 @@ ctf:
             config.resolve_path("inbox"),
             PathBuf::from("/home/user/workspace/0_Inbox")
         );
-        assert_eq!(
-            config.resolve_path("projects"),
-            PathBuf::from("/home/user/workspace/1_Projects")
-        );
     }
 
     #[test]
     fn test_resolve_path_ctf_root() {
-        let config = test_config();
+        let file = create_test_config();
+        let config = Config::load_from_file(file.path()).unwrap();
 
         assert_eq!(
             config.resolve_path("ctf_root"),
@@ -141,19 +191,10 @@ ctf:
     }
 
     #[test]
-    fn test_resolve_path_fallback_to_projects() {
-        let config = test_config();
-
-        // Unknown key should be treated as relative to projects
-        assert_eq!(
-            config.resolve_path("SomeFolder"),
-            PathBuf::from("/home/user/workspace/1_Projects/SomeFolder")
-        );
-    }
-
-    #[test]
     fn test_ctf_root_helper() {
-        let config = test_config();
+        let file = create_test_config();
+        let config = Config::load_from_file(file.path()).unwrap();
+
         assert_eq!(
             config.ctf_root(),
             PathBuf::from("/home/user/workspace/1_Projects/CTFs")

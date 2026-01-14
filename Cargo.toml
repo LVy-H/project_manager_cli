@@ -1,28 +1,51 @@
 [package]
-name = "folder_manager"
+name = "wardex"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.5.54", features = ["derive"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_yml = "0.0.12"
-regex = "1.12.2"
-walkdir = "2.5.0"
-anyhow = "1.0.100"
-colored = "3.0.0"
-tabled = { version = "0.20.0", features = ["ansi"] }
-infer = "0.19.0"
-chrono = "0.4.42"
-dirs = "6.0.0"
-rayon = "1.11.0"
-notify = "8.2.0"
-serde_json = "1.0.149"
-git2 = { version = "0.20.3", default-features = false }
-notify-debouncer-mini = "0.7.0"
-zip = "7.1.0"
-tar = "0.4.44"
-flate2 = "1.1.8"
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Config (layered with env var support)
+config = "0.15"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# File system
+fs_extra = "1.3"
+walkdir = "2.5"
+dirs = "6.0"
+
+# Search (ripgrep libraries)
+grep-regex = "0.1"
+grep-searcher = "0.1"
+regex = "1.12"
+
+# Git
+git2 = { version = "0.20", default-features = false }
+
+# File watching
+notify = "8.0"
+notify-debouncer-mini = "0.7"
+
+# Archive handling
+zip = "7.1"
+tar = "0.4"
+flate2 = "1.1"
+
+# Utilities
+anyhow = "1.0"
+chrono = "0.4"
+rayon = "1.11"
+tabled = { version = "0.20", features = ["ansi"] }
+infer = "0.19"
 
 [dev-dependencies]
 tempfile = "3.24"

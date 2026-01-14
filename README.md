@@ -1,85 +1,88 @@
-# FolderManager
+# Wardex
 
-A powerful CLI tool to keep your workspace organized, built in Rust.
+**Ward & index your workspace** - CTF management, project organization, and more.
 
 ## Features
 
-- **Clean**: Automatically sorts items from Inbox into Projects/Resources based on regex rules
-- **CTF**: Manage Capture The Flag events with scaffolding and organization
-- **Audit**: Scans workspace for empty folders and suspicious file extensions (magic byte mismatch)
-- **Status**: Git repository dashboard showing dirty/clean state and sync status
-- **Watch**: File watcher for auto-sorting Inbox items
-- **Search**: Flag finder with support for searching inside archives (zip, tar, tar.gz)
-- **Undo**: Revert file movement operations
+- 📥 **Inbox Sorting** - Auto-organize files using regex rules
+- 🔍 **Flag Search** - Hunt CTF flags in files and archives
+- 🚩 **CTF Management** - Create and manage competition events
+- 📊 **Git Dashboard** - Status of all repos at a glance
+- ↩️ **Undo Support** - Safely revert file moves
+- 👁️ **Watch Mode** - Real-time inbox monitoring
 
 ## Installation
 
+### Nix
+
 ```bash
-cd rust_src
-cargo build --release
+nix run github:LVy-H/wardex
+# Or add to your flake inputs
 ```
 
-The binary will be at `target/release/folder_manager`.
+### Cargo
+
+```bash
+cargo install --path .
+```
 
 ## Usage
 
 ```bash
-# Clean your Inbox (dry run)
-folder_manager clean --dry-run
+# Sort inbox items
+wardex clean
 
-# Clean for real
-folder_manager clean
+# Watch inbox in real-time
+wardex watch
 
-# Initialize a CTF event
-folder_manager ctf init "EventName" --date 2026-01-14
+# CTF event management
+wardex ctf init Defcon2025
+wardex ctf list
 
-# List CTF events
-folder_manager ctf list
+# Search for flags
+wardex search /path/to/ctf
 
-# Audit workspace health
-folder_manager audit
+# Workspace health check
+wardex status
+wardex audit
 
-# Show git status dashboard
-folder_manager status
-
-# Watch Inbox for changes and auto-sort
-folder_manager watch
-
-# Search for CTF flags recursively
-folder_manager search ./path --pattern "flag\{.*\}"
-
-# Undo last N operations
-folder_manager undo --count 2
+# Undo last moves
+wardex undo -c 3
 ```
 
 ## Configuration
 
-Create a `config.yaml` in the working directory:
+Create `~/.config/wardex/config.yaml`:
 
 ```yaml
 paths:
-  workspace: /path/to/workspace
-  inbox: /path/to/workspace/0_Inbox
-  projects: /path/to/workspace/1_Projects
+  workspace: ~/workspace
+  inbox: ~/workspace/0_Inbox
+  projects: ~/workspace/1_Projects
 
 rules:
   clean:
-    - pattern: "(?i)ctf.*"
-      target: projects/CTFs
     - pattern: ".*\\.pdf$"
-      target: resources/Documents
+      target: projects/Documents
 
 organize:
   ctf_dir: projects/CTFs
 
 ctf:
   default_categories:
-    - Web
-    - Pwn
-    - Crypto
-    - Rev
-    - Misc
-  template_file: null
+    - web
+    - pwn
+    - crypto
+    - rev
+    - misc
+```
+
+### Environment Variables
+
+Override config with `WX_` prefix:
+
+```bash
+WX_PATHS_WORKSPACE=/tmp/test wardex status
 ```
 
 ## License

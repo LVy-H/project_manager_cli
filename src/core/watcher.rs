@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::engine::cleaner;
-use crate::utils::ui;
 use anyhow::{Context, Result};
+use log::{debug, error, info, warn};
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 use std::collections::HashMap;
 use std::fs;
@@ -19,26 +19,22 @@ pub fn watch_inbox(config: &Config) -> Result<()> {
     let inbox_path = config.resolve_path("inbox");
 
     if !inbox_path.exists() {
-        ui::print_error(&format!("Inbox path not found: {:?}", inbox_path));
+        error!("Inbox path not found: {:?}", inbox_path);
         return Ok(());
     }
 
-    ui::print_info(&format!("Watching for changes in: {:?}", inbox_path));
-    ui::print_info("Press Ctrl+C to stop.");
+    info!("Watching for changes in: {:?}", inbox_path);
+    info!("Press Ctrl+C to stop.");
 
-    // Create a channel to receive the events.
     let (tx, rx) = channel();
 
-    // Create a debouncer with configured timeout
     let mut debouncer = new_debouncer(Duration::from_secs(DEBOUNCE_SECONDS), tx)
         .context("Failed to create file watcher")?;
 
-    // Add a path to be watched
     debouncer
         .watcher()
         .watch(&inbox_path, RecursiveMode::NonRecursive)?;
 
-    // Process events
     for res in rx {
         match res {
             Ok(events) => {
@@ -46,30 +42,26 @@ pub fn watch_inbox(config: &Config) -> Result<()> {
                     continue;
                 }
 
-                ui::print_dim("Changes detected. Checking file stability...");
+                debug!("Changes detected. Checking file stability...");
 
-                // Wait for files to stabilize before cleaning
                 if wait_for_stability(&inbox_path) {
-                    ui::print_dim("Files stable. Scanning...");
+                    debug!("Files stable. Scanning...");
                     match cleaner::clean_inbox(config, false) {
                         Ok(report) => {
                             if !report.moved.is_empty() {
-                                ui::print_success(&format!(
-                                    "Auto-cleaned {} items",
-                                    report.moved.len()
-                                ));
+                                info!("✓ Auto-cleaned {} items", report.moved.len());
                             }
                             for err in &report.errors {
-                                ui::print_error(err);
+                                error!("{}", err);
                             }
                         }
-                        Err(e) => ui::print_error(&format!("Auto-clean failed: {}", e)),
+                        Err(e) => error!("Auto-clean failed: {}", e),
                     }
                 } else {
-                    ui::print_warning("Files still changing, skipping this cycle.");
+                    warn!("Files still changing, skipping this cycle.");
                 }
             }
-            Err(e) => ui::print_error(&format!("Watch error: {}", e)),
+            Err(e) => error!("Watch error: {}", e),
         }
     }
 
@@ -77,26 +69,21 @@ pub fn watch_inbox(config: &Config) -> Result<()> {
 }
 
 /// Wait for all files in the inbox to have stable sizes.
-/// Returns true if files are stable, false if they're still changing after max attempts.
 fn wait_for_stability(inbox_path: &PathBuf) -> bool {
     let max_attempts = 5;
     let check_interval = Duration::from_secs(FILE_STABILITY_SECONDS);
 
     for attempt in 0..max_attempts {
-        // Get current file sizes
         let sizes_before = get_file_sizes(inbox_path);
 
         if sizes_before.is_empty() {
-            return true; // No files to check
+            return true;
         }
 
-        // Wait
         std::thread::sleep(check_interval);
 
-        // Get sizes again
         let sizes_after = get_file_sizes(inbox_path);
 
-        // Check if all sizes are the same
         let mut all_stable = true;
         for (path, size_before) in &sizes_before {
             if let Some(&size_after) = sizes_after.get(path) {
@@ -104,12 +91,9 @@ fn wait_for_stability(inbox_path: &PathBuf) -> bool {
                     all_stable = false;
                     break;
                 }
-            } else {
-                // File was removed, that's fine
             }
         }
 
-        // Also check for new files that appeared
         for path in sizes_after.keys() {
             if !sizes_before.contains_key(path) {
                 all_stable = false;
@@ -122,18 +106,17 @@ fn wait_for_stability(inbox_path: &PathBuf) -> bool {
         }
 
         if attempt < max_attempts - 1 {
-            ui::print_dim(&format!(
+            debug!(
                 "Files still changing, waiting... (attempt {}/{})",
                 attempt + 1,
                 max_attempts
-            ));
+            );
         }
     }
 
     false
 }
 
-/// Get sizes of all files in a directory
 fn get_file_sizes(dir: &PathBuf) -> HashMap<PathBuf, u64> {
     let mut sizes = HashMap::new();
 

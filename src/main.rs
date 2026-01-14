@@ -1,7 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use folder_manager::config::Config;
-use folder_manager::core::{auditor, cleaner, ctf, search, status, undo, watcher};
+use folder_manager::core::watcher;
+use folder_manager::engine::{auditor, cleaner, ctf, search, status, undo};
 use folder_manager::utils::ui;
 use std::path::PathBuf;
 
@@ -9,6 +10,10 @@ use std::path::PathBuf;
 #[command(name = "foldermanager")]
 #[command(about = "A powerful CLI tool to keep your workspace organized.", long_about = None)]
 struct Cli {
+    /// Path to config file (searches ~/.config/foldermanager/config.yaml if not specified)
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,28 +62,107 @@ enum CtfCommands {
     List,
 }
 
+/// Search for config file in priority order:
+/// 1. CLI argument (if provided)
+/// 2. $XDG_CONFIG_HOME/foldermanager/config.yaml
+/// 3. ~/.config/foldermanager/config.yaml
+/// 4. ./config.yaml (current directory)
+fn find_config(cli_path: &Option<PathBuf>) -> Result<PathBuf> {
+    // 1. CLI argument takes priority
+    if let Some(path) = cli_path {
+        if path.exists() {
+            return Ok(path.clone());
+        } else {
+            anyhow::bail!("Config file not found: {:?}", path);
+        }
+    }
+
+    // Build list of candidate paths
+    let mut candidates = Vec::new();
+
+    // 2. XDG_CONFIG_HOME / ~/.config
+    if let Some(config_dir) = dirs::config_dir() {
+        candidates.push(config_dir.join("foldermanager/config.yaml"));
+    }
+
+    // 3. Current directory
+    candidates.push(PathBuf::from("config.yaml"));
+
+    // Find first existing path
+    for path in &candidates {
+        if path.exists() {
+            return Ok(path.clone());
+        }
+    }
+
+    // None found, print helpful message
+    let searched: Vec<String> = candidates.iter().map(|p| format!("  - {:?}", p)).collect();
+    anyhow::bail!(
+        "Config file not found. Searched locations:\n{}\n\nUse --config <path> to specify a config file.",
+        searched.join("\n")
+    );
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load config (naive assumption about location for now, e.g., current dir or ~/.config)
-    // We'll look in current dir for now as per Python behavior usually, or specific path
-    // The Python one seemed to assume config.yaml is in the package or current dir?
-    // Let's assume it's in the parent directory for development (project root)
-    // or we search for it.
-
-    // For this migration, we hardcode looking at ../config.yaml relative to run location
-    // or just expects config.yaml in CWD.
-    let config_path = PathBuf::from("config.yaml");
-    if !config_path.exists() {
-        ui::print_error("config.yaml not found in current directory.");
-        return Ok(());
-    }
-
+    // Find config file
+    let config_path = find_config(&cli.config)?;
     let config = Config::load_from_file(&config_path)?;
 
     match &cli.command {
         Commands::Clean { dry_run } => {
-            cleaner::clean_inbox(&config, *dry_run)?;
+            let report = cleaner::clean_inbox(&config, *dry_run)?;
+
+            if report.inbox_not_found {
+                ui::print_error(&format!(
+                    "Inbox path not found: {:?}",
+                    config.resolve_path("inbox")
+                ));
+                return Ok(());
+            }
+
+            if report.inbox_empty {
+                ui::print_warning("Inbox is empty.");
+                return Ok(());
+            }
+
+            // Display moved items
+            for item in &report.moved {
+                if item.dry_run {
+                    ui::print_info(&format!(
+                        "Would move {:?} -> {:?}",
+                        item.source, item.destination
+                    ));
+                } else {
+                    ui::print_success(&format!(
+                        "Moved {:?} -> {:?}",
+                        item.source.file_name().unwrap_or_default(),
+                        item.destination
+                    ));
+                }
+            }
+
+            // Display skipped items
+            for item in &report.skipped {
+                ui::print_dim(&format!(
+                    "Skipped: {:?} ({})",
+                    item.path.file_name().unwrap_or_default(),
+                    item.reason
+                ));
+            }
+
+            // Display errors
+            for err in &report.errors {
+                ui::print_error(err);
+            }
+
+            ui::print_info(&format!(
+                "\nMoved: {}, Skipped: {}, Errors: {}",
+                report.moved.len(),
+                report.skipped.len(),
+                report.errors.len()
+            ));
         }
         Commands::Ctf { command } => match command {
             CtfCommands::Init { name, date } => {
@@ -101,7 +185,34 @@ fn main() -> Result<()> {
             status::show_status(&config)?;
         }
         Commands::Search { path, pattern } => {
-            search::find_flags(path, pattern.clone())?;
+            ui::print_info(&format!("Searching for flags in {:?}...", path));
+            let report = search::find_flags(path, pattern.clone())?;
+
+            // Display matches
+            for m in &report.matches {
+                let location = if let Some(ref entry) = m.archive_entry {
+                    format!("{} (in {})", entry, m.file_path)
+                } else if let Some(line) = m.line_number {
+                    format!("{}:{}", m.file_path, line)
+                } else {
+                    m.file_path.clone()
+                };
+                ui::print_success(&format!("{}: {}", location, m.matched_text));
+            }
+
+            // Summary
+            ui::print_info(&format!(
+                "\nScanned {} files, found {} matches.",
+                report.files_scanned,
+                report.matches.len()
+            ));
+
+            if !report.errors.is_empty() {
+                ui::print_warning(&format!("{} errors occurred:", report.errors.len()));
+                for e in report.errors.iter().take(5) {
+                    ui::print_dim(&format!("  - {}", e));
+                }
+            }
         }
     }
 

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config::Config;
-use crate::core::undo;
+use crate::engine::undo;
 
 pub fn move_item(config: &Config, src: &Path, dest_dir: &Path, dry_run: bool) -> Result<()> {
     if !dest_dir.exists() {

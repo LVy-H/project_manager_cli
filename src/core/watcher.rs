@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::core::cleaner;
+use crate::engine::cleaner;
 use crate::utils::ui;
 use anyhow::{Context, Result};
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
@@ -37,8 +37,19 @@ pub fn watch_inbox(config: &Config) -> Result<()> {
                     continue;
                 }
                 ui::print_dim("Debounced changes detected. Scanning...");
-                if let Err(e) = cleaner::clean_inbox(config, false) {
-                    ui::print_error(&format!("Auto-clean failed: {}", e));
+                match cleaner::clean_inbox(config, false) {
+                    Ok(report) => {
+                        if !report.moved.is_empty() {
+                            ui::print_success(&format!(
+                                "Auto-cleaned {} items",
+                                report.moved.len()
+                            ));
+                        }
+                        for err in &report.errors {
+                            ui::print_error(err);
+                        }
+                    }
+                    Err(e) => ui::print_error(&format!("Auto-clean failed: {}", e)),
                 }
             }
             Err(e) => ui::print_error(&format!("Watch error: {}", e)),

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use folder_manager::config::Config;
-use folder_manager::core::{auditor, cleaner, ctf, status, undo, watcher};
+use folder_manager::core::{auditor, cleaner, ctf, search, status, undo, watcher};
 use folder_manager::utils::ui;
 use std::path::PathBuf;
 
@@ -36,6 +36,13 @@ enum Commands {
     Watch,
     /// Show git status dashboard
     Status,
+    /// Search for flags recursively
+    Search {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(short, long)]
+        pattern: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -92,6 +99,9 @@ fn main() -> Result<()> {
         }
         Commands::Status => {
             status::show_status(&config)?;
+        }
+        Commands::Search { path, pattern } => {
+            search::find_flags(path, pattern.clone())?;
         }
     }
 

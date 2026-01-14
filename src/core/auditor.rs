@@ -9,7 +9,6 @@ use walkdir::WalkDir;
 
 pub struct AuditReport {
     pub empty_folders: Vec<PathBuf>,
-    pub loose_files: Vec<PathBuf>,
     pub suspicious_extensions: Vec<(PathBuf, String, String)>, // Path, Expected, Actual
 }
 
@@ -17,7 +16,6 @@ impl AuditReport {
     pub fn new() -> Self {
         Self {
             empty_folders: Vec::new(),
-            loose_files: Vec::new(),
             suspicious_extensions: Vec::new(),
         }
     }

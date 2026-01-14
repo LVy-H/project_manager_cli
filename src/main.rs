@@ -166,23 +166,182 @@ fn main() -> Result<()> {
         }
         Commands::Ctf { command } => match command {
             CtfCommands::Init { name, date } => {
-                ctf::create_event(&config, name, date.clone())?;
+                let result = ctf::create_event(&config, name, date.clone())?;
+
+                if result.already_exists {
+                    ui::print_error(&format!(
+                        "Event directory already exists: {:?}",
+                        result.event_dir
+                    ));
+                } else {
+                    ui::print_success(&format!("Initialized: {:?}", result.event_dir));
+                    ui::print_info(&format!(
+                        "  + Categories: {}",
+                        result.categories_created.join(", ")
+                    ));
+                    ui::print_info("  + File: notes.md");
+                    ui::print_info("  + Metadata: .ctf_meta.json");
+                }
             }
             CtfCommands::List => {
-                ctf::list_events(&config)?;
+                let result = ctf::list_events(&config)?;
+
+                if result.ctf_root_missing {
+                    ui::print_warning("No CTF directory found.");
+                    return Ok(());
+                }
+
+                if result.events.is_empty() {
+                    ui::print_warning("No CTF events found.");
+                    return Ok(());
+                }
+
+                // Print table header
+                println!(
+                    "{:<30} {:<6} {:<12} {:<10}",
+                    "Event", "Year", "Date", "Challenges"
+                );
+                println!("{}", "-".repeat(60));
+
+                for event in &result.events {
+                    let date_str = event.date.as_deref().unwrap_or("-");
+                    let meta_indicator = if event.has_metadata { "" } else { "*" };
+                    println!(
+                        "{:<30} {:<6} {:<12} {:<10}{}",
+                        event.name, event.year, date_str, event.challenge_count, meta_indicator
+                    );
+                }
+
+                if result.events.iter().any(|e| !e.has_metadata) {
+                    ui::print_dim("\n* Events without metadata file");
+                }
             }
         },
         Commands::Audit => {
-            auditor::audit_workspace(&config)?;
+            ui::print_info("Auditing workspace...");
+            let report = auditor::audit_workspace(&config)?;
+
+            if report.workspace_not_found {
+                ui::print_error(&format!(
+                    "Workspace not found: {:?}",
+                    config.resolve_path("workspace")
+                ));
+                return Ok(());
+            }
+
+            ui::print_info(&format!("Analyzed {} items.", report.items_scanned));
+
+            if !report.empty_folders.is_empty() {
+                ui::print_warning(&format!(
+                    "\nEmpty Folders Found: {}",
+                    report.empty_folders.len()
+                ));
+                for p in report.empty_folders.iter().take(10) {
+                    println!(" - {:?}", p);
+                }
+                if report.empty_folders.len() > 10 {
+                    println!("... and {} more", report.empty_folders.len() - 10);
+                }
+            }
+
+            if !report.suspicious_extensions.is_empty() {
+                ui::print_warning("\nSuspicious Extensions (Magic Byte Mismatch):");
+                for item in &report.suspicious_extensions {
+                    println!(
+                        " - {:?} (Named: .{}, Real: .{})",
+                        item.path, item.declared_ext, item.actual_ext
+                    );
+                }
+            }
+
+            ui::print_success("\nAudit Complete.");
         }
         Commands::Undo { count } => {
-            undo::undo_last(&config, *count)?;
+            let report = undo::undo_last(&config, *count)?;
+
+            if report.no_log_found {
+                ui::print_warning("No undo log found.");
+                return Ok(());
+            }
+
+            if report.log_empty {
+                ui::print_warning("Undo log is empty.");
+                return Ok(());
+            }
+
+            ui::print_info(&format!("Undoing {} operations...", report.undone.len()));
+
+            for item in &report.undone {
+                if item.success {
+                    ui::print_success(&format!(
+                        "Reverted: {:?} -> {:?}",
+                        item.source.file_name().unwrap_or_default(),
+                        item.destination
+                    ));
+                } else {
+                    ui::print_error(&format!(
+                        "Failed: {:?} ({})",
+                        item.source.file_name().unwrap_or_default(),
+                        item.error.as_deref().unwrap_or("Unknown error")
+                    ));
+                }
+            }
+
+            let success_count = report.undone.iter().filter(|i| i.success).count();
+            ui::print_info(&format!(
+                "Completed: {}/{} operations",
+                success_count,
+                report.undone.len()
+            ));
         }
         Commands::Watch => {
             watcher::watch_inbox(&config)?;
         }
         Commands::Status => {
-            status::show_status(&config)?;
+            ui::print_info(&format!(
+                "Scanning workspace: {:?}",
+                config.resolve_path("workspace")
+            ));
+            let report = status::show_status(&config)?;
+
+            if report.workspace_not_found {
+                ui::print_error("Workspace not found.");
+                return Ok(());
+            }
+
+            if report.repos.is_empty() {
+                ui::print_warning("No git repositories found.");
+                return Ok(());
+            }
+
+            // Print table header
+            println!(
+                "\n{:<25} {:<12} {:<15} {}",
+                "Project", "State", "Sync", "Path"
+            );
+            println!("{}", "-".repeat(80));
+
+            for repo in &report.repos {
+                let state = if repo.is_dirty {
+                    format!("⚠ Dirty")
+                } else {
+                    format!("✓ Clean")
+                };
+                println!(
+                    "{:<25} {:<12} {:<15} {}",
+                    repo.name,
+                    state,
+                    repo.sync_status.display(),
+                    repo.path.display()
+                );
+            }
+
+            let dirty_count = report.repos.iter().filter(|r| r.is_dirty).count();
+            ui::print_info(&format!(
+                "\nTotal: {} repos ({} dirty)",
+                report.repos.len(),
+                dirty_count
+            ));
         }
         Commands::Search { path, pattern } => {
             ui::print_info(&format!("Searching for flags in {:?}...", path));

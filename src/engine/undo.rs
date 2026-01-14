@@ -1,5 +1,4 @@
 use crate::config::Config;
-use crate::utils::ui;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -9,7 +8,6 @@ use std::path::{Path, PathBuf};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum OpType {
     Move,
-    // Add Copy/Delete later if needed
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -18,6 +16,23 @@ pub struct Operation {
     pub kind: OpType,
     pub src: PathBuf,
     pub dest: PathBuf,
+}
+
+/// Result of an undo operation
+#[derive(Debug, Clone)]
+pub struct UndoItem {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Result of undo operations
+#[derive(Debug, Default)]
+pub struct UndoReport {
+    pub undone: Vec<UndoItem>,
+    pub no_log_found: bool,
+    pub log_empty: bool,
 }
 
 fn get_log_path(config: &Config) -> PathBuf {
@@ -45,11 +60,14 @@ pub fn log_move(config: &Config, src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn undo_last(config: &Config, count: usize) -> Result<()> {
+pub fn undo_last(config: &Config, count: usize) -> Result<UndoReport> {
     let log_path = get_log_path(config);
+
     if !log_path.exists() {
-        ui::print_warning("No undo log found.");
-        return Ok(());
+        return Ok(UndoReport {
+            no_log_found: true,
+            ..Default::default()
+        });
     }
 
     let file = std::fs::File::open(&log_path)?;
@@ -57,35 +75,52 @@ pub fn undo_last(config: &Config, count: usize) -> Result<()> {
     let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
 
     if lines.is_empty() {
-        ui::print_warning("Undo log is empty.");
-        return Ok(());
+        return Ok(UndoReport {
+            log_empty: true,
+            ..Default::default()
+        });
     }
 
     let to_undo = lines.len().min(count);
     let (keep, revert) = lines.split_at(lines.len() - to_undo);
 
-    ui::print_info(&format!("Undoing last {} operations...", to_undo));
+    let mut undone = Vec::new();
 
     for line in revert.iter().rev() {
         let op: Operation = serde_json::from_str(line)?;
         match op.kind {
             OpType::Move => {
-                // Reverse move: dest -> src
-                ui::print_info(&format!(
-                    "Reverting: {:?} -> {:?}",
-                    op.dest.file_name().unwrap(),
-                    op.src
-                ));
                 if op.dest.exists() {
-                    // We don't log the undo itself to the regular log to avoid loops,
-                    // or we could but with a different type. For now, just move back.
-                    // We use fs::rename directly to avoid circular logging if we reused move_item
+                    // Create parent directory if needed
                     if let Some(parent) = op.src.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        let _ = std::fs::create_dir_all(parent);
                     }
-                    std::fs::rename(&op.dest, &op.src).context("Failed to revert move")?;
+
+                    match std::fs::rename(&op.dest, &op.src) {
+                        Ok(_) => {
+                            undone.push(UndoItem {
+                                source: op.dest.clone(),
+                                destination: op.src.clone(),
+                                success: true,
+                                error: None,
+                            });
+                        }
+                        Err(e) => {
+                            undone.push(UndoItem {
+                                source: op.dest.clone(),
+                                destination: op.src.clone(),
+                                success: false,
+                                error: Some(e.to_string()),
+                            });
+                        }
+                    }
                 } else {
-                    ui::print_warning(&format!("Skipping: {:?} not found", op.dest));
+                    undone.push(UndoItem {
+                        source: op.dest.clone(),
+                        destination: op.src.clone(),
+                        success: false,
+                        error: Some("Source file not found".to_string()),
+                    });
                 }
             }
         }
@@ -97,6 +132,9 @@ pub fn undo_last(config: &Config, count: usize) -> Result<()> {
         writeln!(file, "{}", line)?;
     }
 
-    ui::print_success("Undo complete.");
-    Ok(())
+    Ok(UndoReport {
+        undone,
+        no_log_found: false,
+        log_empty: false,
+    })
 }

@@ -55,7 +55,7 @@
             
             meta = with pkgs.lib; {
               description = "A powerful CLI tool to keep your workspace organized";
-              homepage = "https://github.com/yourusername/folder_manager";
+              homepage = "https://github.com/LVy-H/project_manager_cli";
               license = licenses.mit;
               maintainers = [];
               mainProgram = "folder_manager";

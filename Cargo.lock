@@ -501,6 +501,7 @@ dependencies = [
  "serde_yml",
  "tabled",
  "tar",
+ "tempfile",
  "walkdir",
  "zip",
 ]

@@ -1,64 +1,83 @@
 use crate::config::Config;
-use crate::utils::ui;
 use anyhow::Result;
 use git2::{Repository, StatusOptions};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use tabled::settings::Style;
-use tabled::{Table, Tabled};
 use walkdir::WalkDir;
 
-#[derive(Tabled)]
-struct RepoStatus {
-    #[tabled(rename = "Project")]
-    name: String,
-    #[tabled(rename = "State")]
-    state: String,
-    #[tabled(rename = "Sync")]
-    sync: String,
-    #[tabled(rename = "Path")]
-    path: String,
+/// Status of a single git repository
+#[derive(Debug, Clone)]
+pub struct RepoStatus {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dirty: bool,
+    pub sync_status: SyncStatus,
 }
 
-pub fn show_status(config: &Config) -> Result<()> {
+/// Sync status with remote
+#[derive(Debug, Clone)]
+pub enum SyncStatus {
+    Synced,
+    Ahead(usize),
+    Behind(usize),
+    Diverged { ahead: usize, behind: usize },
+    Local,    // No remote tracking
+    Detached, // Detached HEAD
+    NoHead,   // Empty repo
+    Unknown,
+}
+
+impl SyncStatus {
+    pub fn display(&self) -> String {
+        match self {
+            SyncStatus::Synced => "Synced".to_string(),
+            SyncStatus::Ahead(n) => format!("↑ {}", n),
+            SyncStatus::Behind(n) => format!("↓ {}", n),
+            SyncStatus::Diverged { ahead, behind } => format!("↑ {} ↓ {}", ahead, behind),
+            SyncStatus::Local => "Local".to_string(),
+            SyncStatus::Detached => "Detached".to_string(),
+            SyncStatus::NoHead => "No HEAD".to_string(),
+            SyncStatus::Unknown => "-".to_string(),
+        }
+    }
+}
+
+/// Result of status scan
+#[derive(Debug, Default)]
+pub struct StatusReport {
+    pub repos: Vec<RepoStatus>,
+    pub workspace_not_found: bool,
+}
+
+pub fn show_status(config: &Config) -> Result<StatusReport> {
     let workspace = config.resolve_path("workspace");
 
-    ui::print_info(&format!(
-        "Scanning workspace for git repositories: {:?}",
-        workspace
-    ));
+    if !workspace.exists() {
+        return Ok(StatusReport {
+            workspace_not_found: true,
+            ..Default::default()
+        });
+    }
 
     // Find all .git directories
-    // We use WalkDir but filter efficiently
     let git_dirs: Vec<PathBuf> = WalkDir::new(&workspace)
         .min_depth(1)
-        .max_depth(3) // Optimization: Assume projects aren't deeper than 3 levels from workspace root usually
+        .max_depth(3)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_dir() && e.file_name() == ".git")
-        .map(|e| e.path().parent().unwrap().to_path_buf())
+        .filter_map(|e| e.path().parent().map(|p| p.to_path_buf()))
         .collect();
 
-    if git_dirs.is_empty() {
-        ui::print_warning("No git repositories found.");
-        return Ok(());
-    }
-
-    let statuses: Vec<RepoStatus> = git_dirs
+    let repos: Vec<RepoStatus> = git_dirs
         .par_iter()
         .filter_map(|path| analyze_repo(path).ok())
         .collect();
 
-    if statuses.is_empty() {
-        ui::print_warning("Could not analyze any found repositories.");
-        return Ok(());
-    }
-
-    let mut table = Table::new(statuses);
-    table.with(Style::rounded());
-    println!("{}", table);
-
-    Ok(())
+    Ok(StatusReport {
+        repos,
+        workspace_not_found: false,
+    })
 }
 
 fn analyze_repo(path: &Path) -> Result<RepoStatus> {
@@ -75,56 +94,58 @@ fn analyze_repo(path: &Path) -> Result<RepoStatus> {
     let statuses = repo.statuses(Some(&mut opts))?;
     let is_dirty = !statuses.is_empty();
 
-    let state = if is_dirty {
-        format!("{} Dirty", ui::colorize("⚠", "yellow"))
-    } else {
-        format!("{} Clean", ui::colorize("✓", "green"))
-    };
-
-    // Check sync status (simple HEAD vs origin/HEAD)
-    let sync = match get_sync_status(&repo) {
-        Ok(s) => s,
-        Err(_) => "-".to_string(),
-    };
+    // Check sync status
+    let sync_status = get_sync_status(&repo);
 
     Ok(RepoStatus {
         name,
-        state,
-        sync,
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
+        is_dirty,
+        sync_status,
     })
 }
 
-fn get_sync_status(repo: &Repository) -> Result<String> {
+fn get_sync_status(repo: &Repository) -> SyncStatus {
     if repo.head().is_err() {
-        return Ok("No HEAD".to_string());
+        return SyncStatus::NoHead;
     }
-    let head = repo.head()?;
 
-    // Check if branch is tracking a remote
-    // if not, return Local
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(_) => return SyncStatus::Unknown,
+    };
+
     if !head.is_branch() {
-        return Ok("Detached".to_string());
+        return SyncStatus::Detached;
     }
 
     let branch = git2::Branch::wrap(head);
     let upstream = match branch.upstream() {
         Ok(u) => u,
-        Err(_) => return Ok("Local".to_string()),
+        Err(_) => return SyncStatus::Local,
     };
 
-    let local_oid = branch.get().target().unwrap();
-    let remote_oid = upstream.get().target().unwrap();
+    let local_oid = match branch.get().target() {
+        Some(oid) => oid,
+        None => return SyncStatus::Unknown,
+    };
+    let remote_oid = match upstream.get().target() {
+        Some(oid) => oid,
+        None => return SyncStatus::Unknown,
+    };
 
-    let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+    let (ahead, behind) = match repo.graph_ahead_behind(local_oid, remote_oid) {
+        Ok(ab) => ab,
+        Err(_) => return SyncStatus::Unknown,
+    };
 
-    if ahead == 0 && behind == 0 {
-        Ok("Synced".to_string())
-    } else if ahead > 0 && behind == 0 {
-        Ok(format!("↑ {}", ahead))
-    } else if behind > 0 && ahead == 0 {
-        Ok(format!("↓ {}", behind))
-    } else {
-        Ok(format!("↑ {} ↓ {}", ahead, behind))
+    match (ahead, behind) {
+        (0, 0) => SyncStatus::Synced,
+        (a, 0) => SyncStatus::Ahead(a),
+        (0, b) => SyncStatus::Behind(b),
+        (a, b) => SyncStatus::Diverged {
+            ahead: a,
+            behind: b,
+        },
     }
 }

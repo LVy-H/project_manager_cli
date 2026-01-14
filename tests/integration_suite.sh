@@ -56,6 +56,17 @@ echo "Testing: Stats"
 $CMD stats | grep "Projects"
 echo "✅ Stats command ran successfully"
 
+# 3.5 Test Robust Config (Minimal)
+echo "------------------------------------------------"
+echo "Testing: Robust Config (Minimal)"
+MINIMAL_CONFIG="$TEST_DIR/minimal_config.yaml"
+cat > "$MINIMAL_CONFIG" <<EOF
+paths:
+  workspace: "$TEST_DIR/workspace"
+EOF
+$BINARY --config "$MINIMAL_CONFIG" status
+echo "✅ Minimal config Status command passed"
+
 # 4. Test CTF Workflow
 echo "------------------------------------------------"
 echo "Testing: CTF Workflow"

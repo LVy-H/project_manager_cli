@@ -7,8 +7,11 @@ use std::path::PathBuf;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub paths: Paths,
+    #[serde(default)]
     pub rules: Rules,
+    #[serde(default)]
     pub organize: Organize,
+    #[serde(default)]
     pub ctf: CtfConfig,
 }
 
@@ -24,12 +27,13 @@ pub struct Paths {
     /// Explicit CTF root path (optional, defaults to projects/CTFs)
     pub ctf_root: Option<PathBuf>,
     /// Additional custom paths for rules
-    #[serde(flatten)]
+    #[serde(flatten, default)]
     pub custom: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Rules {
+    #[serde(default)]
     pub clean: Vec<CleanRule>,
 }
 
@@ -44,10 +48,33 @@ pub struct Organize {
     pub ctf_dir: String,
 }
 
+impl Default for Organize {
+    fn default() -> Self {
+        Self {
+            ctf_dir: "CTFs".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CtfConfig {
+    #[serde(default)]
     pub default_categories: Vec<String>,
     pub template_file: Option<String>,
+}
+
+impl Default for CtfConfig {
+    fn default() -> Self {
+        Self {
+            default_categories: vec![
+                "pwn".to_string(),
+                "web".to_string(),
+                "crypto".to_string(),
+                "rev".to_string(),
+            ],
+            template_file: None,
+        }
+    }
 }
 
 impl Config {
@@ -163,13 +190,6 @@ mod tests {
             r#"
 paths:
   workspace: /home/user/workspace
-rules:
-  clean: []
-organize:
-  ctf_dir: projects/CTFs
-ctf:
-  default_categories: []
-  template_file: null
 "#
         )
         .unwrap();

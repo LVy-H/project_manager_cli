@@ -15,6 +15,17 @@ pub struct Config {
     pub ctf: CtfConfig,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            paths: Paths::default(),
+            rules: Rules::default(),
+            organize: Organize::default(),
+            ctf: CtfConfig::default(),
+        }
+    }
+}
+
 /// Explicit path configuration
 #[derive(Debug, Deserialize, Clone)]
 pub struct Paths {
@@ -29,6 +40,21 @@ pub struct Paths {
     /// Additional custom paths for rules
     #[serde(flatten, default)]
     pub custom: HashMap<String, String>,
+}
+
+impl Default for Paths {
+    fn default() -> Self {
+        Self {
+            workspace: PathBuf::from("workspace"),
+            inbox: None,
+            projects: None,
+            areas: None,
+            resources: None,
+            archives: None,
+            ctf_root: None,
+            custom: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]

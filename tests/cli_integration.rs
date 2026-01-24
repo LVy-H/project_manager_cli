@@ -17,6 +17,9 @@ impl TestEnv {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         cmd.current_dir(self.temp_dir.path());
         cmd.env("WX_PATHS_WORKSPACE", self.temp_dir.path());
+        cmd.env("XDG_CONFIG_HOME", self.temp_dir.path());
+        cmd.env("XDG_DATA_HOME", self.temp_dir.path());
+        cmd.env("HOME", self.temp_dir.path()); // Just in case
         let config_file = self.temp_dir.path().join("config.yaml");
         if config_file.exists() {
             cmd.arg("--config").arg(&config_file);
@@ -99,7 +102,8 @@ fn test_ctf_list_empty() {
 #[test]
 fn test_config_init() {
     let env = TestEnv::new();
-    env.create_config();
+    // Do NOT create config first
+    // env.create_config();
 
     env.cmd().args(&["config", "init"]).assert().success();
 }
@@ -107,10 +111,10 @@ fn test_config_init() {
 #[test]
 fn test_config_init_twice_without_force_fails() {
     let env = TestEnv::new();
+    // Create config manually first
     env.create_config();
 
-    env.cmd().args(&["config", "init"]).assert().success();
-
+    // This should fail because it exists
     env.cmd()
         .args(&["config", "init"])
         .assert()
@@ -123,8 +127,10 @@ fn test_config_init_with_force_succeeds() {
     let env = TestEnv::new();
     env.create_config();
 
-    env.cmd().args(&["config", "init"]).assert().success();
+    // First attempt fails
+    env.cmd().args(&["config", "init"]).assert().failure();
 
+    // Force succeeds
     env.cmd()
         .args(&["config", "init", "--force"])
         .assert()

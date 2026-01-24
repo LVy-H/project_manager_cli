@@ -185,6 +185,19 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Check if we are initializing config (don't load it if so)
+    if let Commands::Config {
+        command: ConfigCommands::Init { .. },
+    } = &cli.command
+    {
+        let config = Config::default(); // Dummy config
+                                        // We still need to pass config to handle_config_command, but handle_config_command doesn't use it for Init
+        if let Commands::Config { command } = &cli.command {
+            handle_config_command(&config, command, cli.config.as_ref())?;
+        }
+        return Ok(());
+    }
+
     let config_path = find_config(&cli.config)?;
     let config = Config::load_from_file(&config_path)?;
 
@@ -503,22 +516,29 @@ fn main() -> Result<()> {
             }
         }
         Commands::Config { command } => {
-            handle_config_command(&config, command)?;
+            handle_config_command(&config, command, cli.config.as_ref())?;
         }
     }
 
     Ok(())
 }
 
-fn handle_config_command(config: &Config, command: &ConfigCommands) -> Result<()> {
+fn handle_config_command(
+    config: &Config,
+    command: &ConfigCommands,
+    explicit_config_path: Option<&PathBuf>,
+) -> Result<()> {
     match command {
         ConfigCommands::Init { force } => {
-            let config_path = dirs::config_dir()
-                .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
-                .join("wardex");
-
-            fs_err::create_dir_all(&config_path)?;
-            let config_file = config_path.join("config.yaml");
+            let config_file = if let Some(path) = explicit_config_path {
+                path.clone()
+            } else {
+                let config_path = dirs::config_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+                    .join("wardex");
+                fs_err::create_dir_all(&config_path)?;
+                config_path.join("config.yaml")
+            };
 
             if config_file.exists() && !force {
                 anyhow::bail!(

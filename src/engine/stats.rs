@@ -1,6 +1,7 @@
 use crate::config::Config;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 
 #[derive(Debug, Default)]
@@ -56,25 +57,45 @@ pub fn get_stats(config: &Config) -> Result<WorkspaceStats> {
     // "wardex stats" usually implies a comprehensive scan.
     // We can use WalkDir but parallelize accumulation?
 
-    let walker = WalkDir::new(&workspace).into_iter();
+    let walker = WalkDir::new(&workspace)
+        .max_depth(10)
+        .follow_links(false)
+        .into_iter();
 
-    // TODO: Improve performance for large workspaces
+    let stats_mutex = Arc::new(Mutex::new((0u64, 0usize, HashMap::new())));
+    let repos_count = Arc::new(Mutex::new(0usize));
+
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
 
         if path.is_file() {
-            stats.total_files += 1;
-            stats.total_size_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if let Ok(metadata) = entry.metadata() {
+                let size = metadata.len();
+                let ext = path.extension().and_then(|s| s.to_str()).map(String::from);
 
-            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                *stats.file_types.entry(ext.to_string()).or_insert(0) += 1;
+                let mut guard = stats_mutex.lock().unwrap();
+                guard.0 += size;
+                guard.1 += 1;
+                if let Some(ext) = ext {
+                    *guard.2.entry(ext).or_insert(0) += 1;
+                }
             }
         } else if path.is_dir() {
             if path.join(".git").exists() {
-                stats.total_repos += 1;
+                let mut repos = repos_count.lock().unwrap();
+                *repos += 1;
             }
         }
     }
+
+    let (total_size, total_files, file_types) =
+        Arc::try_unwrap(stats_mutex).unwrap().into_inner().unwrap();
+    let total_repos = Arc::try_unwrap(repos_count).unwrap().into_inner().unwrap();
+
+    stats.total_size_bytes = total_size;
+    stats.total_files = total_files;
+    stats.file_types = file_types;
+    stats.total_repos = total_repos;
 
     Ok(stats)
 }

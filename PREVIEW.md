@@ -1,7 +1,7 @@
-# Sentinel: Your Second Brain for Development
+# Wardex: Your Second Brain for Development
 
 > [!NOTE]
-> **Evolution**: Sentinel has evolved from a simple cleaner into a proactive **Workspace Manager**. It handles the lifecycle of your projects: **Creation**, **Management**, and **Archival**.
+> **Evolution**: Wardex has evolved from a simple cleaner into a proactive **Workspace Manager**. It handles the lifecycle of your projects: **Creation**, **Management**, and **Archival**.
 
 ## 🌟 Manager Capabilities (Core)
 
@@ -11,25 +11,33 @@ Perfectly organized workspaces, zero manual setup.
 #### 1. � Smart Import & Categorization
 Downloaded `chall.zip`? Don't unarchive it manually.
 ```bash
-sentinel ctf import ~/Downloads/chall.zip
+#### 1. ⚡ Smart Import & Categorization
+Downloaded `chall.zip`? Don't unarchive it manually.
+```bash
+wardex ctf import ~/Downloads/chall.zip
 ```
-*   **Analysis**: Sentinel scans the zip contents before extracting.
+*   **Analysis**: Detects category from both filename and archive contents.
 *   **auto-Route**:
-    *   Contains `Dockerfile`? -> Suggests: `Web`
-    *   Contains `libc.so`? -> Suggests: `Pwn`
-*   **Action**: Extracts to `Current_Event/Category/ChallName/` and creates a `solve.py` template.
+    *   **Filename**: Contains `web`/`pwn`/`crypto`/`rev`/`misc`? → Corresponding category
+    *   **Contents** (if filename doesn't match):
+        *   Contains `Dockerfile`, `package.json`, `app.py`? → Category: `web`
+        *   Contains `libc.so`, `.elf`, `ld-`? → Category: `pwn`
+        *   Contains `crypto`, `cipher`, `rsa`, `aes`? → Category: `crypto`
+        *   Contains `.exe`, `.dll`? → Category: `rev`
+    *   **Default**: `misc` if no match
+*   **Action**: Copies archive to `Current_Event/Category/ChallName/` and creates a category-specific solve script template.
 
 #### 2. 📝 Writeup Assembly
 Don't let your notes rot in 10 different folders.
 ```bash
-sentinel ctf writeup
+wardex ctf writeup
 ```
 *   **Aggregates**: Scans all challenge folders for `notes.md` or `README.md`.
 *   **Compiles**: Generates a single `Draft_Writeup.md` with headers for each solved challenge.
 
 #### 3. 🏗️ Adaptive Scaffolding
 ```bash
-sentinel ctf add pwn/heap-overflow
+wardex ctf add pwn/heap-overflow
 ```
 *   **Templates**: Uses specific templates based on category (e.g., `pwntools` for Pwn, `requests` for Web).
 
@@ -40,15 +48,18 @@ Start new projects with best practices built-in.
 
 ```bash
 # Interactive Project Creation
-sentinel init --type rust --name "my-api"
+wardex init --type rust --name "my-api"
 ```
 
-## 🔮 Visionary Features
+## 🔮 Roadmap / Future Features
 
-*   **Sentinel Brain**: Local AI/Semantic search (`sentinel ask`).
-*   **Flow State**: Context switching tailored to your workflow (`sentinel resume`).
-*   **Knowledge Graph**: Visualize dependencies (`sentinel graph`).
-*   **Ghost Archival**: Zero-space project preservation (`sentinel archive --ghost`).
+> [!WARNING]
+> **These features are planned but NOT YET IMPLEMENTED:**
+
+*   **Wardex Brain**: Local AI/Semantic search (`wardex ask`) - *Not implemented*
+*   **Flow State**: Context switching tailored to your workflow (`wardex resume`) - *Not implemented*
+*   **Knowledge Graph**: Visualize dependencies (`wardex graph`) - *Not implemented*
+*   **Ghost Archival**: Zero-space project preservation (`wardex archive --ghost`) - *Not implemented*
 
 ---
 

@@ -236,15 +236,21 @@ fn count_challenges(event_dir: &Path) -> usize {
 }
 
 pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
-    // 1. Check if we are in a CTF event directory
     let current_dir = std::env::current_dir()?;
-    // simple check: look for .ctf_meta.json
+
     if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!("Not inside a CTF event directory (missing .ctf_meta.json)");
+        anyhow::bail!(
+            "Not inside a CTF event directory (missing .ctf_meta.json)\n\n\
+            Tip: Navigate to a CTF event directory or create one with:\n  \
+            wardex ctf init <event-name>"
+        );
     }
 
     if !path.exists() {
-        anyhow::bail!("Challenge file not found: {:?}", path);
+        anyhow::bail!(
+            "Challenge file not found: {:?}\n\nPlease verify the file path is correct.",
+            path
+        );
     }
 
     println!("Analyzing challenge archive: {:?}", path);
@@ -256,7 +262,6 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
         .unwrap_or("challenge")
         .to_lowercase();
 
-    // Heuristic 1: File name contains category
     let category = if file_name.contains("web") {
         "web"
     } else if file_name.contains("pwn") || file_name.contains("bof") {
@@ -268,11 +273,18 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
     } else if file_name.contains("misc") {
         "misc"
     } else {
-        // scan content for cues
-        "misc" // Default to misc if unknown
+        detect_category_from_archive(path).unwrap_or("misc")
     };
 
-    println!("Detected category: {}", category);
+    println!(
+        "Detected category: {} ({})",
+        category,
+        if category == "misc" {
+            "default - consider organizing manually"
+        } else {
+            "auto-detected"
+        }
+    );
 
     // Create category dir if needed
     let category_dir = current_dir.join(category);
@@ -313,12 +325,22 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
 pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!("Not inside a CTF event directory.");
+        anyhow::bail!(
+            "Not inside a CTF event directory.\n\n\
+            Tip: Navigate to a CTF event directory or create one with:\n  \
+            wardex ctf init <event-name>"
+        );
     }
 
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Invalid format. Use <category>/<name> (e.g. pwn/overflow)");
+        anyhow::bail!(
+            "Invalid format. Use <category>/<name>\n\n\
+            Examples:\n  \
+            wardex ctf add pwn/buffer-overflow\n  \
+            wardex ctf add web/sql-injection\n  \
+            wardex ctf add crypto/rsa-challenge"
+        );
     }
     let category = parts[0];
     let name = parts[1];
@@ -331,7 +353,11 @@ pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
 
     let challenge_dir = category_dir.join(name);
     if challenge_dir.exists() {
-        anyhow::bail!("Challenge already exists: {:?}", challenge_dir);
+        anyhow::bail!(
+            "Challenge already exists: {:?}\n\n\
+            Tip: Use a different name or remove the existing directory first.",
+            challenge_dir
+        );
     }
 
     fs::create_dir(&challenge_dir)?;
@@ -376,10 +402,14 @@ print(r.text)
 pub fn generate_writeup(_config: &Config) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!("Not inside a CTF event directory.");
+        anyhow::bail!(
+            "Not inside a CTF event directory.\n\n\
+            Tip: Navigate to a CTF event directory to generate its writeup."
+        );
     }
 
-    let meta = CtfMeta::load(&current_dir).context("Failed to load metadata")?;
+    let meta =
+        CtfMeta::load(&current_dir).context("Failed to load CTF metadata (.ctf_meta.json)")?;
     let mut writeup_content = format!("# Writeup: {}\n\nDate: {}\n\n", meta.name, meta.date);
 
     // Walk through categories and challenges
@@ -479,4 +509,137 @@ pub fn archive_event(config: &Config, name: &str) -> Result<()> {
 
     println!("Event archived successfully.");
     Ok(())
+}
+
+fn detect_category_from_archive(archive_path: &Path) -> Option<&'static str> {
+    let ext = archive_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    match ext {
+        "zip" => scan_zip_for_category(archive_path),
+        "tar" | "gz" | "tgz" => scan_tar_for_category(archive_path),
+        _ => None,
+    }
+}
+
+fn scan_zip_for_category(path: &Path) -> Option<&'static str> {
+    use zip::ZipArchive;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = ZipArchive::new(file).ok()?;
+
+    for i in 0..archive.len().min(50) {
+        if let Ok(file) = archive.by_index(i) {
+            let name = file.name().to_lowercase();
+
+            if name.contains("dockerfile")
+                || name.contains("package.json")
+                || name.contains("app.py")
+                || name.contains("server.js")
+                || name.contains("index.html")
+            {
+                return Some("web");
+            }
+
+            if name.contains("libc.so")
+                || name.ends_with(".elf")
+                || name.contains("ld-")
+                || name.contains("pwntools")
+            {
+                return Some("pwn");
+            }
+
+            if name.contains("crypto")
+                || name.contains("cipher")
+                || name.contains("rsa")
+                || name.contains("aes")
+                || name.contains("key.txt")
+            {
+                return Some("crypto");
+            }
+
+            if name.ends_with(".exe")
+                || name.ends_with(".dll")
+                || name.contains("ghidra")
+                || name.contains("ida")
+            {
+                return Some("rev");
+            }
+        }
+    }
+
+    None
+}
+
+fn scan_tar_for_category(path: &Path) -> Option<&'static str> {
+    use flate2::read::GzDecoder;
+    use std::io::{BufReader, Read};
+    use tar::Archive;
+
+    let file = std::fs::File::open(path).ok()?;
+
+    let reader: Box<dyn Read> = if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e == "gz")
+        .unwrap_or(false)
+        || path.to_string_lossy().ends_with(".tgz")
+    {
+        Box::new(GzDecoder::new(BufReader::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+
+    let mut archive = Archive::new(reader);
+
+    if let Ok(entries) = archive.entries() {
+        for (idx, entry) in entries.enumerate() {
+            if idx > 50 {
+                break;
+            }
+            if let Ok(entry) = entry {
+                if let Ok(path) = entry.path() {
+                    let name = path.to_string_lossy().to_lowercase();
+
+                    if name.contains("dockerfile")
+                        || name.contains("package.json")
+                        || name.contains("app.py")
+                        || name.contains("server.js")
+                        || name.contains("index.html")
+                    {
+                        return Some("web");
+                    }
+
+                    if name.contains("libc.so")
+                        || name.ends_with(".elf")
+                        || name.contains("ld-")
+                        || name.contains("pwntools")
+                    {
+                        return Some("pwn");
+                    }
+
+                    if name.contains("crypto")
+                        || name.contains("cipher")
+                        || name.contains("rsa")
+                        || name.contains("aes")
+                        || name.contains("key.txt")
+                    {
+                        return Some("crypto");
+                    }
+
+                    if name.ends_with(".exe")
+                        || name.ends_with(".dll")
+                        || name.contains("ghidra")
+                        || name.contains("ida")
+                    {
+                        return Some("rev");
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }

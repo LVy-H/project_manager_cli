@@ -19,6 +19,26 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ConfigCommands {
+    /// Initialize config file with defaults
+    Init {
+        #[arg(long, help = "Force overwrite if config exists")]
+        force: bool,
+    },
+    /// Show current configuration
+    Show,
+    /// Edit config in $EDITOR
+    Edit,
+    /// Navigate to workspace folders (prints path for shell integration)
+    Goto {
+        #[arg(
+            help = "Folder to navigate to: workspace|inbox|projects|areas|resources|archives|ctf"
+        )]
+        folder: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum CtfCommands {
     /// Initialize a new CTF event
     Init {
@@ -92,6 +112,11 @@ enum Commands {
     Stats,
     /// Quick file/project info
     Info { path: Option<PathBuf> },
+    /// Manage configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
 }
 
 /// Search for config file in priority order
@@ -419,7 +444,6 @@ fn main() -> Result<()> {
             stats::print_stats(&stats);
         }
         Commands::Info { path } => {
-            // Basic info for now, can extend to "Project Info" later
             let target = path.clone().unwrap_or_else(|| PathBuf::from("."));
             info!("Info for: {:?}", target);
             if target.exists() {
@@ -433,6 +457,113 @@ fn main() -> Result<()> {
             } else {
                 error!("Path not found");
             }
+        }
+        Commands::Config { command } => {
+            handle_config_command(&config, command)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_config_command(config: &Config, command: &ConfigCommands) -> Result<()> {
+    match command {
+        ConfigCommands::Init { force } => {
+            let config_path = dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+                .join("wardex");
+
+            std::fs::create_dir_all(&config_path)?;
+            let config_file = config_path.join("config.yaml");
+
+            if config_file.exists() && !force {
+                anyhow::bail!(
+                    "Config file already exists at {:?}\n\n\
+                    Use --force to overwrite",
+                    config_file
+                );
+            }
+
+            let default_config = r#"paths:
+  workspace: ~/workspace
+  inbox: ~/workspace/0_Inbox
+  projects: ~/workspace/1_Projects
+  areas: ~/workspace/2_Areas
+  resources: ~/workspace/3_Resources
+  archives: ~/workspace/4_Archives
+
+organize:
+  ctf_dir: projects/CTFs
+
+ctf:
+  default_categories:
+    - web
+    - pwn
+    - crypto
+    - rev
+    - misc
+"#;
+
+            std::fs::write(&config_file, default_config)?;
+            println!("✓ Config initialized at: {:?}", config_file);
+            println!("\nEdit with: wardex config edit");
+        }
+
+        ConfigCommands::Show => {
+            println!("📋 Current Configuration\n");
+            println!("Paths:");
+            println!("  workspace:  {:?}", config.resolve_path("workspace"));
+            println!("  inbox:      {:?}", config.resolve_path("inbox"));
+            println!("  projects:   {:?}", config.resolve_path("projects"));
+            println!("  areas:      {:?}", config.resolve_path("areas"));
+            println!("  resources:  {:?}", config.resolve_path("resources"));
+            println!("  archives:   {:?}", config.resolve_path("archives"));
+            println!("  ctf_root:   {:?}", config.ctf_root());
+        }
+
+        ConfigCommands::Edit => {
+            let config_file = dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+                .join("wardex/config.yaml");
+
+            if !config_file.exists() {
+                anyhow::bail!(
+                    "Config file not found at {:?}\n\n\
+                    Initialize with: wardex config init",
+                    config_file
+                );
+            }
+
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+            std::process::Command::new(&editor)
+                .arg(&config_file)
+                .status()?;
+
+            println!("✓ Config edited. Changes will apply on next wardex command.");
+        }
+
+        ConfigCommands::Goto { folder } => {
+            let path = match folder.as_str() {
+                "workspace" => config.resolve_path("workspace"),
+                "inbox" => config.resolve_path("inbox"),
+                "projects" => config.resolve_path("projects"),
+                "areas" => config.resolve_path("areas"),
+                "resources" => config.resolve_path("resources"),
+                "archives" => config.resolve_path("archives"),
+                "ctf" => config.ctf_root(),
+                _ => anyhow::bail!(
+                    "Unknown folder: {}\n\n\
+                    Available: workspace, inbox, projects, areas, resources, archives, ctf",
+                    folder
+                ),
+            };
+
+            if !path.exists() {
+                eprintln!("Warning: Path does not exist: {:?}", path);
+            }
+
+            println!("{}", path.display());
         }
     }
 

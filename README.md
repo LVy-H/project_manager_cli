@@ -5,15 +5,17 @@
 ## Features
 
 - 📥 **Inbox Sorting** - Auto-organize files using regex rules
-- 🔍 **Flag Search** - Hunt CTF flags in files and archives
+- 🔍 **Flag Search** - Hunt CTF flags in files and archives (respects `.gitignore`)
 - 🚩 **CTF Management** - Create and manage competition events
-- 📊 **Git Dashboard** - Status of all repos at a glance
+- 📊 **Git Dashboard** - Status of all repos at a glance (parallelized)
 - ↩️ **Undo Support** - Safely revert file moves
 - 👁️ **Watch Mode** - Real-time inbox monitoring
+- 🛡️ **Workspace Audit** - Find empty folders and file extension mismatches
 
 ## Installation
 
 ### Nix
+
 
 ```bash
 nix run github:LVy-H/wardex

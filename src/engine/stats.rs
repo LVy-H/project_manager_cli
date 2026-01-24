@@ -120,3 +120,18 @@ pub fn print_stats(stats: &WorkspaceStats) {
         println!("  .{:<4} : {}", ext, count);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_workspace_stats_default() {
+        let stats = WorkspaceStats::default();
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_size_bytes, 0);
+        assert_eq!(stats.total_repos, 0);
+        assert!(stats.file_types.is_empty());
+    }
+}

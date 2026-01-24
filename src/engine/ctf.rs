@@ -751,11 +751,62 @@ pub fn solve_challenge(config: &Config, flag: &str) -> Result<()> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("Invalid directory name"))?;
 
+    // 1. Save flag
     let flag_path = current_dir.join("flag.txt");
     fs::write(&flag_path, flag)?;
     println!("✓ Saved flag to {:?}", flag_path);
 
-    println!("Committing changes...");
+    // 2. Scan for solution script (convention: solve.*)
+    let mut solution_script = None;
+    let candidates = [
+        "solve.py",
+        "solve.sh",
+        "exploit.py",
+        "exploit.sh",
+        "solve.rb",
+        "solve.js",
+        "solution.txt",
+    ];
+
+    for candidate in candidates {
+        if current_dir.join(candidate).exists() {
+            solution_script = Some(candidate.to_string());
+            break;
+        }
+    }
+
+    if let Some(script_name) = &solution_script {
+        println!("✓ Detected solution script: {}", script_name);
+    } else {
+        println!("! No standard solution script found (e.g. solve.py). Skipping writeup append.");
+    }
+
+    // 3. Update Writeup (notes.md)
+    if let Some(script_name) = &solution_script {
+        let script_path = current_dir.join(script_name);
+        if let Ok(content) = fs::read_to_string(&script_path) {
+            let notes_path = current_dir.join("notes.md");
+            let mut notes_content = fs::read_to_string(&notes_path).unwrap_or_default();
+
+            let ext = script_name.split('.').last().unwrap_or("");
+            let header = format!("\n\n## Solution Code ({})\n\n```{}\n", script_name, ext);
+            let footer = "\n```\n";
+
+            // Avoid duplication if possible
+            if !notes_content.contains(&header) {
+                use std::io::Write;
+                let mut file = fs::File::options()
+                    .create(true)
+                    .append(true)
+                    .open(&notes_path)?;
+                write!(file, "{}{}{}", header, content, footer)?;
+                println!("✓ Appended {} to notes.md", script_name);
+            }
+        }
+    }
+
+    // 4. Git commit (Everything)
+    println!("\nCommitting ALL changes (history)...");
     use std::process::Command;
 
     let add_status = Command::new("git")
@@ -784,11 +835,13 @@ pub fn solve_challenge(config: &Config, flag: &str) -> Result<()> {
         println!("! Git commit failed (nothing to commit?)");
     }
 
-    println!("Compressing solution...");
+    // 5. Compress Everything (respecting .gitignore)
+    println!("Compressing artifacts...");
     let zip_path = current_dir.join("solution.zip");
     create_zip(&current_dir, &zip_path)?;
     println!("✓ Created solution.zip");
 
+    // 6. Archive
     if let Some(category_dir) = current_dir.parent() {
         if let Some(event_dir) = category_dir.parent() {
             if event_dir.join(".ctf_meta.json").exists() {
@@ -827,6 +880,7 @@ fn create_zip(src_dir: &Path, dest_file: &Path) -> Result<()> {
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
+    // Zip everything that is NOT ignored by git
     for entry in WalkBuilder::new(src_dir)
         .hidden(false)
         .git_ignore(true)
@@ -834,13 +888,15 @@ fn create_zip(src_dir: &Path, dest_file: &Path) -> Result<()> {
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
+        // Skip the zip file itself and directories
         if path.is_file() && path != dest_file {
-            let name = path.strip_prefix(src_dir).unwrap();
-            zip.start_file(name.to_string_lossy(), options)?;
-            let mut f = fs::File::open(path)?;
-            let mut buffer = Vec::new();
-            f.read_to_end(&mut buffer)?;
-            zip.write_all(&buffer)?;
+            if let Ok(name) = path.strip_prefix(src_dir) {
+                zip.start_file(name.to_string_lossy(), options)?;
+                let mut f = fs::File::open(path)?;
+                let mut buffer = Vec::new();
+                f.read_to_end(&mut buffer)?;
+                zip.write_all(&buffer)?;
+            }
         }
     }
     zip.finish()?;

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use wardex::config::Config;
 use wardex::core::watcher;
 use wardex::engine::{auditor, cleaner, ctf, scaffold, search, stats, status, undo};
+use wardex::tui;
 
 #[derive(Parser)]
 #[command(name = "wardex")]
@@ -130,6 +131,8 @@ enum Commands {
     Grep { pattern: String },
     /// Show workspace analytics
     Stats,
+    /// Launch interactive TUI dashboard
+    Dashboard,
     /// Quick file/project info
     Info { path: Option<PathBuf> },
     /// Manage configuration
@@ -472,6 +475,9 @@ fn main() -> Result<()> {
         Commands::Stats => {
             let stats = stats::get_stats(&config)?;
             stats::print_stats(&stats);
+        }
+        Commands::Dashboard => {
+            tui::run(&config)?;
         }
         Commands::Info { path } => {
             let target = path.clone().unwrap_or_else(|| PathBuf::from("."));

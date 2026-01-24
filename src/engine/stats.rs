@@ -4,7 +4,7 @@ use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct WorkspaceStats {
     pub total_projects: usize,
     pub total_repos: usize,

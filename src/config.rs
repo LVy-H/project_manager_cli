@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub paths: Paths,
     #[serde(default)]
@@ -16,7 +16,7 @@ pub struct Config {
 }
 
 /// Explicit path configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Paths {
     pub workspace: PathBuf,
     pub inbox: Option<PathBuf>,
@@ -31,19 +31,19 @@ pub struct Paths {
     pub custom: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct Rules {
     #[serde(default)]
     pub clean: Vec<CleanRule>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CleanRule {
     pub pattern: String,
     pub target: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Organize {
     pub ctf_dir: String,
 }
@@ -56,7 +56,7 @@ impl Default for Organize {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CtfConfig {
     #[serde(default)]
     pub default_categories: Vec<String>,

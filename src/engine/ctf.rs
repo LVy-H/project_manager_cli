@@ -1,8 +1,8 @@
 use crate::config::Config;
 use anyhow::{Context, Result};
 use chrono::prelude::*;
+use fs_err as fs;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// CTF event metadata stored in .ctf_meta.json
@@ -124,6 +124,11 @@ pub fn create_event(
     meta.categories = categories_created.clone();
     meta.save(&event_dir)?;
 
+    // Auto-set active event
+    if let Err(e) = set_active_event(config, name) {
+        println!("Warning: Failed to set active event: {}", e);
+    }
+
     Ok(CreateEventResult {
         event_dir,
         categories_created,
@@ -235,25 +240,21 @@ fn count_challenges(event_dir: &Path) -> usize {
     count
 }
 
-pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
+pub fn import_challenge(
+    config: &Config,
+    path: &PathBuf,
+    category_override: Option<String>,
+) -> Result<()> {
+    use dialoguer::{theme::ColorfulTheme, Select};
 
-    if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!(
-            "Not inside a CTF event directory (missing .ctf_meta.json)\n\n\
-            Tip: Navigate to a CTF event directory or create one with:\n  \
-            wardex ctf init <event-name>"
-        );
-    }
+    let event_root = get_active_event_root()?;
 
     if !path.exists() {
         anyhow::bail!(
-            "Challenge file not found: {:?}\n\nPlease verify the file path is correct.",
+            "File not found: {:?}\n\nPlease verify the file path is correct.",
             path
         );
     }
-
-    println!("Analyzing challenge archive: {:?}", path);
 
     // Heuristics to guess category
     let file_name = path
@@ -262,7 +263,7 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
         .unwrap_or("challenge")
         .to_lowercase();
 
-    let category = if file_name.contains("web") {
+    let detected_category = if file_name.contains("web") {
         "web"
     } else if file_name.contains("pwn") || file_name.contains("bof") {
         "pwn"
@@ -273,26 +274,50 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
     } else if file_name.contains("misc") {
         "misc"
     } else {
-        detect_category_from_archive(path).unwrap_or("misc")
+        detect_category_from_file(path).unwrap_or("misc")
     };
 
-    println!(
-        "Detected category: {} ({})",
-        category,
-        if category == "misc" {
-            "default - consider organizing manually"
-        } else {
-            "auto-detected"
+    // Interactive category selection or override
+    let category_string;
+    let category = if let Some(cat) = category_override {
+        category_string = cat;
+        &category_string
+    } else {
+        let mut categories = config.ctf.default_categories.clone();
+        if !categories.contains(&detected_category.to_string()) {
+            categories.push(detected_category.to_string());
         }
-    );
+        // Ensure "misc" is always available
+        if !categories.iter().any(|c| c == "misc") {
+            categories.push("misc".to_string());
+        }
+
+        // Find index of detected category
+        let default_idx = categories
+            .iter()
+            .position(|c| c == detected_category)
+            .unwrap_or(0);
+
+        println!("Importing: {:?}", path.file_name().unwrap());
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select Category")
+            .default(default_idx)
+            .items(&categories)
+            .interact()
+            .unwrap_or(default_idx);
+
+        category_string = categories[selection].clone();
+        &category_string
+    };
 
     // Create category dir if needed
-    let category_dir = current_dir.join(category);
+    let category_dir = event_root.join(category);
     if !category_dir.exists() {
         fs::create_dir(&category_dir)?;
     }
 
-    // Determine challenge name from archive name (strip extension)
+    // Determine challenge name from file name (strip extension)
     let challenge_name = Path::new(&file_name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -306,15 +331,22 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
     fs::create_dir(&challenge_dir)?;
     println!("Created challenge directory: {:?}", challenge_dir);
 
-    // Extract archive
-    // Note: In a real implementation we would iterate and exact files here.
-    // For now we just copy the archive there for manual extraction or use standard tools
-    // but the plan says "Smart Import", so let's try to extract if we can.
-
-    // For this MVP, let's just copy the file into the folder
+    // Move the file
     let dest_file = challenge_dir.join(path.file_name().unwrap());
-    fs::copy(path, &dest_file)?;
-    println!("Imported archive to {:?}", dest_file);
+
+    match fs::rename(path, &dest_file) {
+        Ok(_) => println!("✓ Moved file to {:?}", dest_file),
+        Err(_) => {
+            // Fallback to copy + delete if rename fails (cross-device link)
+            println!("Move failed, attempting copy...");
+            fs::copy(path, &dest_file)?;
+            fs::remove_file(path)?;
+            println!("✓ Copied and removed original file");
+        }
+    }
+
+    // If it's a zip/tar, offer to extract?
+    // For now, just keeping the file there is fine as per "Move not copy" requirement.
 
     // Add a default solve script
     add_solve_script(&challenge_dir, category)?;
@@ -322,36 +354,63 @@ pub fn import_challenge(_config: &Config, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!(
-            "Not inside a CTF event directory.\n\n\
-            Tip: Navigate to a CTF event directory or create one with:\n  \
-            wardex ctf init <event-name>"
-        );
+fn detect_category_from_file(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "zip" => scan_zip_for_category(path),
+        "tar" | "gz" | "tgz" => scan_tar_for_category(path),
+        "py" | "js" | "html" | "php" => Some("web"),
+        "c" | "cpp" | "elf" => Some("pwn"),
+        "enc" | "key" | "pem" => Some("crypto"),
+        "exe" | "dll" | "asm" => Some("rev"),
+        "pcap" | "pcapng" | "mem" => Some("forensics"),
+        "jpg" | "png" | "gif" => Some("misc"), // steg?
+        _ => None,
     }
+}
+
+pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
+    let event_root = get_active_event_root()?;
 
     let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() != 2 {
+
+    let (category, name) = if parts.len() == 2 {
+        (parts[0].to_string(), parts[1].to_string())
+    } else if parts.len() == 1 {
+        // Try to infer category from CWD
+        let current_dir = std::env::current_dir()?;
+        // Check if current dir is a direct child of event_root
+        if current_dir.parent() == Some(&event_root) {
+            let cat_name = current_dir.file_name().unwrap().to_string_lossy();
+            (cat_name.to_string(), parts[0].to_string())
+        } else {
+            anyhow::bail!(
+                "Invalid format. Use <category>/<name> OR run inside a category folder.\n\n\
+                Examples:\n  \
+                wardex ctf add pwn/buffer-overflow\n  \
+                wardex ctf add web/sql-injection"
+            );
+        }
+    } else {
         anyhow::bail!(
             "Invalid format. Use <category>/<name>\n\n\
             Examples:\n  \
-            wardex ctf add pwn/buffer-overflow\n  \
-            wardex ctf add web/sql-injection\n  \
-            wardex ctf add crypto/rsa-challenge"
+            wardex ctf add pwn/buffer-overflow"
         );
-    }
-    let category = parts[0];
-    let name = parts[1];
+    };
 
-    let category_dir = current_dir.join(category);
+    let category_dir = event_root.join(&category);
     if !category_dir.exists() {
         println!("Creating category: {}", category);
         fs::create_dir(&category_dir)?;
     }
 
-    let challenge_dir = category_dir.join(name);
+    let challenge_dir = category_dir.join(&name);
     if challenge_dir.exists() {
         anyhow::bail!(
             "Challenge already exists: {:?}\n\n\
@@ -363,7 +422,7 @@ pub fn add_challenge(_config: &Config, path: &str) -> Result<()> {
     fs::create_dir(&challenge_dir)?;
     println!("Created challenge: {}/{}", category, name);
 
-    add_solve_script(&challenge_dir, category)?;
+    add_solve_script(&challenge_dir, &category)?;
 
     Ok(())
 }
@@ -400,20 +459,14 @@ print(r.text)
 }
 
 pub fn generate_writeup(_config: &Config) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    if !current_dir.join(".ctf_meta.json").exists() {
-        anyhow::bail!(
-            "Not inside a CTF event directory.\n\n\
-            Tip: Navigate to a CTF event directory to generate its writeup."
-        );
-    }
+    let event_root = get_active_event_root()?;
 
     let meta =
-        CtfMeta::load(&current_dir).context("Failed to load CTF metadata (.ctf_meta.json)")?;
+        CtfMeta::load(&event_root).context("Failed to load CTF metadata (.ctf_meta.json)")?;
     let mut writeup_content = format!("# Writeup: {}\n\nDate: {}\n\n", meta.name, meta.date);
 
     // Walk through categories and challenges
-    if let Ok(cats) = fs::read_dir(&current_dir) {
+    if let Ok(cats) = fs::read_dir(&event_root) {
         let mut categories: Vec<_> = cats.filter_map(|e| e.ok()).collect();
         categories.sort_by_key(|e| e.file_name());
 
@@ -454,7 +507,7 @@ pub fn generate_writeup(_config: &Config) -> Result<()> {
         }
     }
 
-    let writeup_path = current_dir.join("Writeup.md");
+    let writeup_path = event_root.join("Writeup.md");
     fs::write(&writeup_path, writeup_content)?;
     println!("Generated writeup at {:?}", writeup_path);
 
@@ -511,23 +564,10 @@ pub fn archive_event(config: &Config, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn detect_category_from_archive(archive_path: &Path) -> Option<&'static str> {
-    let ext = archive_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-
-    match ext {
-        "zip" => scan_zip_for_category(archive_path),
-        "tar" | "gz" | "tgz" => scan_tar_for_category(archive_path),
-        _ => None,
-    }
-}
-
 fn scan_zip_for_category(path: &Path) -> Option<&'static str> {
     use zip::ZipArchive;
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = fs::File::open(path).ok()?;
     let mut archive = ZipArchive::new(file).ok()?;
 
     for i in 0..archive.len().min(50) {
@@ -578,7 +618,7 @@ fn scan_tar_for_category(path: &Path) -> Option<&'static str> {
     use std::io::{BufReader, Read};
     use tar::Archive;
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = fs::File::open(path).ok()?;
 
     let reader: Box<dyn Read> = if path
         .extension()
@@ -642,4 +682,147 @@ fn scan_tar_for_category(path: &Path) -> Option<&'static str> {
     }
 
     None
+}
+
+pub fn get_event_path(
+    config: &Config,
+    event_name: Option<&str>,
+    challenge_name: Option<&str>,
+) -> Result<PathBuf> {
+    let events = list_events(config)?;
+
+    if events.ctf_root_missing {
+        anyhow::bail!("CTF root directory not found");
+    }
+
+    if events.events.is_empty() {
+        anyhow::bail!("No CTF events found");
+    }
+
+    let event_path = if let Some(name) = event_name {
+        events
+            .events
+            .iter()
+            .find(|e| e.name.to_lowercase().contains(&name.to_lowercase()))
+            .map(|e| e.path.clone())
+            .ok_or_else(|| anyhow::anyhow!("Event not found: {}", name))?
+    } else {
+        // Prefer current event context (local or global) if available
+        if let Ok(root) = get_active_event_root() {
+            root
+        } else {
+            // Fallback to latest
+            events
+                .events
+                .iter()
+                .max_by_key(|e| e.year)
+                .map(|e| e.path.clone())
+                .ok_or_else(|| anyhow::anyhow!("No CTF events found"))?
+        }
+    };
+
+    if let Some(chall) = challenge_name {
+        for entry in fs::read_dir(&event_path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                for chall_entry in fs::read_dir(entry.path())? {
+                    let chall_entry = chall_entry?;
+                    if chall_entry
+                        .file_name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&chall.to_lowercase())
+                    {
+                        return Ok(chall_entry.path());
+                    }
+                }
+            }
+        }
+        anyhow::bail!("Challenge not found: {}", chall);
+    }
+
+    Ok(event_path)
+}
+
+/// Walk up directory tree to find CTF event root (containing .ctf_meta.json)
+pub fn find_event_root() -> Option<PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        if current.join(".ctf_meta.json").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Get the active event root from local context or global state
+pub fn get_active_event_root() -> Result<PathBuf> {
+    // 1. Try local context (walking up)
+    if let Some(root) = find_event_root() {
+        return Ok(root);
+    }
+    // 2. Try global state
+    let state = crate::core::state::AppState::load();
+    if let Some(path) = state.get_event() {
+        if path.exists() && path.join(".ctf_meta.json").exists() {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!(
+        "No active CTF event found.\nRun inside an event dir or use 'wardex ctf use <event>'"
+    )
+}
+
+pub fn set_active_event(config: &Config, name: &str) -> Result<()> {
+    let path = get_event_path(config, Some(name), None)?;
+    let mut state = crate::core::state::AppState::load();
+    state.set_event(path.clone())?;
+    println!("Switched to event: {}", name);
+    println!("Context set to: {:?}", path);
+    Ok(())
+}
+
+/// Get info about current CTF context
+pub fn get_context_info(_config: &Config) -> Result<()> {
+    let root = match get_active_event_root() {
+        Ok(r) => r,
+        Err(_) => {
+            println!("No active CTF event context detected.");
+            println!(
+                "Run this command inside a CTF event directory or use 'wardex ctf use <event>'."
+            );
+            return Ok(());
+        }
+    };
+
+    let meta = CtfMeta::load(&root).ok_or_else(|| anyhow::anyhow!("Failed to load metadata"))?;
+
+    // Check if we are physically inside the root
+    let current = std::env::current_dir()?;
+    let is_local = current.starts_with(&root);
+
+    println!("Current Event: {} ({})", meta.name, meta.year);
+    println!("Root: {:?}", root);
+    println!(
+        "Source: {}",
+        if is_local {
+            "Local Directory"
+        } else {
+            "Global State"
+        }
+    );
+
+    if is_local {
+        if let Ok(rel) = current.strip_prefix(&root) {
+            if rel.components().count() > 0 {
+                println!("Location: ./{}", rel.display());
+            } else {
+                println!("Location: Event Root");
+            }
+        }
+    }
+    Ok(())
 }

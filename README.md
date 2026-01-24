@@ -42,8 +42,13 @@ wardex config goto inbox  # Print path (for shell integration)
 wardex watch
 
 # CTF event management
-wardex ctf init Defcon2025
+wardex ctf init Defcon2025 # Defaults to today's date (auto-activates event)
 wardex ctf list
+wardex ctf use Defcon2025    # Switch active event context manually
+wardex ctf info              # Show current event context
+wardex ctf import file.zip   # Smart import (moves file, auto-detects category)
+wardex ctf add web/chall1    # Manually add challenge (infers category if in subfolder)
+wardex ctf path              # Print path to current event (cd $(wardex ctf path))
 
 # Search for flags
 wardex search /path/to/ctf
@@ -55,6 +60,35 @@ wardex audit
 # Undo last moves
 wardex undo -c 3
 ```
+
+### Context Awareness & Persistence
+
+Wardex knows where you are and what you're working on.
+
+**1. Context Detection**:
+- Run commands from **any subdirectory** (e.g., inside `web/chall1`).
+- Wardex automatically walks up the tree to find the event root.
+
+**2. Global State**:
+- Wardex remembers your active event globally.
+- Switch contexts with `wardex ctf use <event>`.
+- Run commands from anywhere (e.g., `~/Downloads`), and they will apply to the active event.
+
+**3. Shell Integration**:
+Add this function to your `.bashrc` or `.zshrc` for seamless navigation:
+
+```bash
+function ctf() {
+    if [ "$1" = "goto" ]; then
+        # 'wardex ctf path' defaults to current active event
+        cd "$(wardex ctf path "$2" "$3")"
+    else
+        wardex ctf "$@"
+    fi
+}
+```
+
+Usage: `ctf goto` (to active event) or `ctf goto web/chall1`.
 
 ## Configuration
 

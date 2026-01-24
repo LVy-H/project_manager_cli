@@ -1,8 +1,8 @@
 use crate::config::Config;
 use anyhow::Result;
+use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use walkdir::WalkDir;
 
 #[derive(Debug, Default)]
 pub struct WorkspaceStats {
@@ -31,7 +31,7 @@ pub fn get_stats(config: &Config) -> Result<WorkspaceStats> {
     // Count projects (top-level folders in 1_Projects)
     let projects_dir = config.resolve_path("projects");
     if projects_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        if let Ok(entries) = fs_err::read_dir(&projects_dir) {
             stats.total_projects = entries
                 .filter(|e| e.as_ref().map(|x| x.path().is_dir()).unwrap_or(false))
                 .count();
@@ -45,7 +45,7 @@ pub fn get_stats(config: &Config) -> Result<WorkspaceStats> {
         // We might need to handle this smarter to avoid circular deps if we use ctf module
         // But ctf module is engine sibling so it's fine.
         // Actually, let's keep it simple and just count dirs in ctf_root
-        if let Ok(entries) = std::fs::read_dir(&ctf_root) {
+        if let Ok(entries) = fs_err::read_dir(&ctf_root) {
             stats.ctf_count = entries
                 .filter(|e| e.as_ref().map(|x| x.path().is_dir()).unwrap_or(false))
                 .count();
@@ -57,10 +57,10 @@ pub fn get_stats(config: &Config) -> Result<WorkspaceStats> {
     // "wardex stats" usually implies a comprehensive scan.
     // We can use WalkDir but parallelize accumulation?
 
-    let walker = WalkDir::new(&workspace)
-        .max_depth(10)
+    let walker = WalkBuilder::new(&workspace)
+        .max_depth(Some(10))
         .follow_links(false)
-        .into_iter();
+        .build();
 
     let stats_mutex = Arc::new(Mutex::new((0u64, 0usize, HashMap::new())));
     let repos_count = Arc::new(Mutex::new(0usize));

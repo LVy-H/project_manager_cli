@@ -25,7 +25,7 @@ wardex ctf import ~/Downloads/chall.zip
         *   Contains `crypto`, `cipher`, `rsa`, `aes`? → Category: `crypto`
         *   Contains `.exe`, `.dll`? → Category: `rev`
     *   **Default**: `misc` if no match
-*   **Action**: Copies archive to `Current_Event/Category/ChallName/` and creates a category-specific solve script template.
+*   **Action**: **MOVES** file to `Current_Event/Category/ChallName/` (keeps Downloads clean) and creates solve script.
 
 #### 2. 📝 Writeup Assembly
 Don't let your notes rot in 10 different folders.

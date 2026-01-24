@@ -8,6 +8,7 @@ use wardex::engine::{auditor, cleaner, ctf, scaffold, search, stats, status, und
 
 #[derive(Parser)]
 #[command(name = "wardex")]
+#[command(version)]
 #[command(about = "Ward & index your workspace - CTF management, project organization, and more.", long_about = None)]
 struct Cli {
     #[arg(long, value_name = "FILE", help = "Path to config file")]
@@ -51,6 +52,12 @@ enum CtfCommands {
     Import {
         #[arg(help = "Path to challenge zip/tar")]
         file: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "Category (web, pwn, etc.) - skips interactive prompt"
+        )]
+        category: Option<String>,
     },
     /// Add a new challenge to current event
     Add {
@@ -63,6 +70,20 @@ enum CtfCommands {
     Archive {
         #[arg(help = "Name of the event to archive")]
         name: String,
+    },
+    /// Print path to CTF event or challenge (for shell integration)
+    Path {
+        #[arg(help = "Event name (optional, defaults to current context or latest)")]
+        event: Option<String>,
+        #[arg(help = "Challenge name (optional)")]
+        challenge: Option<String>,
+    },
+    /// Show current CTF context info
+    Info,
+    /// Set the current active event context globally
+    Use {
+        #[arg(help = "Event name/path to activate")]
+        event: String,
     },
 }
 
@@ -252,8 +273,8 @@ fn main() -> Result<()> {
                     log::debug!("* Events without metadata file");
                 }
             }
-            CtfCommands::Import { file } => {
-                ctf::import_challenge(&config, file)?;
+            CtfCommands::Import { file, category } => {
+                ctf::import_challenge(&config, file, category.clone())?;
             }
             CtfCommands::Add { path } => {
                 ctf::add_challenge(&config, path)?;
@@ -262,7 +283,17 @@ fn main() -> Result<()> {
                 ctf::generate_writeup(&config)?;
             }
             CtfCommands::Archive { name } => {
-                ctf::archive_event(&config, &name)?;
+                ctf::archive_event(&config, name)?;
+            }
+            CtfCommands::Path { event, challenge } => {
+                let path = ctf::get_event_path(&config, event.as_deref(), challenge.as_deref())?;
+                println!("{}", path.display());
+            }
+            CtfCommands::Info => {
+                ctf::get_context_info(&config)?;
+            }
+            CtfCommands::Use { event } => {
+                ctf::set_active_event(&config, event)?;
             }
         },
         Commands::Audit => {
@@ -396,7 +427,7 @@ fn main() -> Result<()> {
                 } else {
                     m.file_path.clone()
                 };
-                info!("✓ {}: {}", location, m.matched_text);
+                println!("✓ {}: {}", location, m.matched_text);
             }
 
             info!(
@@ -446,7 +477,7 @@ fn main() -> Result<()> {
             let target = path.clone().unwrap_or_else(|| PathBuf::from("."));
             info!("Info for: {:?}", target);
             if target.exists() {
-                let meta = std::fs::metadata(&target)?;
+                let meta = fs_err::metadata(&target)?;
                 println!(
                     "Type: {:?}",
                     if target.is_dir() { "Directory" } else { "File" }
@@ -472,7 +503,7 @@ fn handle_config_command(config: &Config, command: &ConfigCommands) -> Result<()
                 .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
                 .join("wardex");
 
-            std::fs::create_dir_all(&config_path)?;
+            fs_err::create_dir_all(&config_path)?;
             let config_file = config_path.join("config.yaml");
 
             if config_file.exists() && !force {
@@ -503,7 +534,7 @@ ctf:
     - misc
 "#;
 
-            std::fs::write(&config_file, default_config)?;
+            fs_err::write(&config_file, default_config)?;
             println!("✓ Config initialized at: {:?}", config_file);
             println!("\nEdit with: wardex config edit");
         }

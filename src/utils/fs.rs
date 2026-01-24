@@ -23,7 +23,7 @@ pub fn move_item(
 ) -> Result<MoveResult> {
     if !dest_dir.exists() {
         if !dry_run {
-            std::fs::create_dir_all(dest_dir).context("Failed to create destination directory")?;
+            fs_err::create_dir_all(dest_dir).context("Failed to create destination directory")?;
         }
     }
 

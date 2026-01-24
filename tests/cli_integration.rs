@@ -224,3 +224,220 @@ fn test_ctf_add_invalid_format() {
         .assert()
         .failure();
 }
+
+#[test]
+fn test_ctf_path_command() {
+    let env = TestEnv::new();
+    env.setup_workspace();
+    env.create_config();
+
+    // Init event
+    let ctf_root = env.path().join("1_Projects/CTFs");
+    std::fs::create_dir_all(&ctf_root).unwrap();
+
+    // We need to run init inside the ctf root or ensure config points to it
+    // Config points to it.
+
+    env.cmd()
+        .args(&["ctf", "init", "PathTest"])
+        .assert()
+        .success();
+
+    // Get path
+    env.cmd()
+        .args(&["ctf", "path", "PathTest"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PathTest"));
+
+    // Find the event dir name to use for add command context
+    let event_dir = fs::read_dir(&ctf_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains("PathTest"))
+        .unwrap()
+        .path();
+
+    // Add challenge needs to be run inside event dir
+    let mut cmd = env.cmd();
+    cmd.current_dir(&event_dir);
+    cmd.args(&["ctf", "add", "web/chall1"]).assert().success();
+
+    // Test path to challenge
+    env.cmd()
+        .args(&["ctf", "path", "PathTest", "chall1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chall1"));
+}
+
+#[test]
+fn test_ctf_import_with_category_flag_and_move() {
+    let env = TestEnv::new();
+    env.setup_workspace();
+    env.create_config();
+
+    let ctf_root = env.path().join("1_Projects/CTFs");
+    std::fs::create_dir_all(&ctf_root).unwrap();
+
+    env.cmd()
+        .args(&["ctf", "init", "ImportTest"])
+        .assert()
+        .success();
+
+    let event_dir = fs::read_dir(&ctf_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains("ImportTest"))
+        .unwrap()
+        .path();
+
+    // Create dummy file to import outside event dir (e.g. in Inbox)
+    let inbox = env.path().join("0_Inbox");
+    let import_file = inbox.join("flag.txt");
+    fs::write(&import_file, "CTF{test}").unwrap();
+
+    // Import with category override
+    let mut cmd = env.cmd();
+    cmd.current_dir(&event_dir);
+    cmd.args(&[
+        "ctf",
+        "import",
+        import_file.to_str().unwrap(),
+        "--category",
+        "misc",
+    ])
+    .assert()
+    .success();
+
+    // Check if file moved and exists in misc/flag
+    let challenge_dir = event_dir.join("misc/flag");
+    assert!(challenge_dir.exists());
+    assert!(challenge_dir.join("flag.txt").exists());
+
+    // Verify file content
+    let content = fs::read_to_string(challenge_dir.join("flag.txt")).unwrap();
+    assert_eq!(content, "CTF{test}");
+
+    // Check that original file is GONE (moved)
+    assert!(!import_file.exists());
+}
+
+#[test]
+fn test_ctf_context_awareness() {
+    let env = TestEnv::new();
+    env.setup_workspace();
+    env.create_config();
+
+    let ctf_root = env.path().join("1_Projects/CTFs");
+    std::fs::create_dir_all(&ctf_root).unwrap();
+
+    // Init event
+    env.cmd()
+        .args(&["ctf", "init", "ContextTest"])
+        .assert()
+        .success();
+
+    let event_dir = fs::read_dir(&ctf_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains("ContextTest"))
+        .unwrap()
+        .path();
+
+    // 1. Test add from category dir (implicit category)
+    let web_dir = event_dir.join("web");
+    assert!(web_dir.exists());
+
+    let mut cmd = env.cmd();
+    cmd.current_dir(&web_dir);
+    cmd.args(&["ctf", "add", "chall1"]) // Should infer "web"
+        .assert()
+        .success();
+
+    assert!(web_dir.join("chall1").exists());
+
+    // 2. Test info command from deep inside
+    let mut cmd = env.cmd();
+    cmd.current_dir(&web_dir.join("chall1"));
+    cmd.args(&["ctf", "info"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ContextTest"))
+        .stdout(predicate::str::contains("web"));
+}
+
+#[test]
+fn test_ctf_global_state() {
+    let env = TestEnv::new();
+    env.setup_workspace();
+    env.create_config();
+
+    // 1. Init event (should auto-set global state)
+    let output = env
+        .cmd()
+        .args(&["ctf", "init", "GlobalEvent"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains("Switched to event") {
+        println!("DEBUG: Init stdout: {}", stdout);
+        println!(
+            "DEBUG: Init stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // 2. Check info from OUTSIDE the event dir (e.g. root workspace)
+    let mut cmd = env.cmd();
+    cmd.current_dir(env.path()); // Workspace root, not event dir
+    cmd.args(&["ctf", "info"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GlobalEvent"))
+        .stdout(predicate::str::contains("Global State"));
+
+    // 3. Add challenge from outside (using global state)
+    let mut cmd = env.cmd();
+    cmd.current_dir(env.path());
+    cmd.args(&["ctf", "add", "pwn/remote-exploit"])
+        .assert()
+        .success();
+
+    // Verify it was created inside the event
+    let ctf_root = env.path().join("1_Projects/CTFs");
+    // Find the event dir
+    let event_dir = fs::read_dir(&ctf_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains("GlobalEvent"))
+        .unwrap()
+        .path();
+
+    assert!(event_dir.join("pwn/remote-exploit").exists());
+
+    // 4. Create another event and switch to it
+    env.cmd()
+        .args(&["ctf", "init", "SecondEvent"])
+        .assert()
+        .success();
+    // Verify switch
+    env.cmd()
+        .args(&["ctf", "info"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SecondEvent"));
+
+    // 5. Explicitly use the first event
+    env.cmd()
+        .args(&["ctf", "use", "GlobalEvent"])
+        .assert()
+        .success();
+
+    env.cmd()
+        .args(&["ctf", "info"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GlobalEvent"));
+}

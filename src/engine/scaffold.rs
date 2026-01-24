@@ -1,6 +1,6 @@
 use crate::config::Config;
 use anyhow::Result;
-use std::fs;
+use fs_err as fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -41,7 +41,7 @@ pub fn init_project(config: &Config, name: &str, project_type: &str) -> Result<(
     Ok(())
 }
 
-fn init_rust(path: &PathBuf, name: &str) -> Result<()> {
+fn init_rust(path: &std::path::Path, name: &str) -> Result<()> {
     // cargo init --name name
     Command::new("cargo")
         .arg("init")
@@ -52,7 +52,7 @@ fn init_rust(path: &PathBuf, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn init_python(path: &PathBuf, _name: &str) -> Result<()> {
+fn init_python(path: &std::path::Path, _name: &str) -> Result<()> {
     // Basic python structure
     fs::create_dir(path.join("src"))?;
     fs::create_dir(path.join("tests"))?;
@@ -74,7 +74,7 @@ fn init_python(path: &PathBuf, _name: &str) -> Result<()> {
     Ok(())
 }
 
-fn init_node(path: &PathBuf, _name: &str) -> Result<()> {
+fn init_node(path: &std::path::Path, _name: &str) -> Result<()> {
     // npm init -y
     Command::new("npm")
         .arg("init")

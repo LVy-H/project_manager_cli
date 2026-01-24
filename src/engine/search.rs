@@ -1,14 +1,14 @@
 use crate::config::Config;
 use anyhow::{Context, Result};
+use fs_err::File;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
-use std::fs::File;
+use ignore::WalkBuilder;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 use zip::ZipArchive;
 
 /// Maximum file size to scan (100MB). Files larger than this are skipped.
@@ -68,13 +68,16 @@ pub fn find_project(config: &Config, query: &str) -> Result<Vec<SearchResult>> {
         }
 
         // Search top-level directories in these locations
-        for entry in WalkDir::new(&root)
-            .min_depth(1)
-            .max_depth(2)
-            .into_iter()
+        for entry in WalkBuilder::new(&root)
+            .max_depth(Some(2))
+            .build()
             .filter_map(|e| e.ok())
         {
-            if !entry.file_type().is_dir() {
+            if entry.depth() < 1 {
+                continue;
+            }
+
+            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 continue;
             }
 
@@ -110,7 +113,7 @@ pub fn content_search(config: &Config, pattern: &str) -> Result<Vec<Match>> {
             continue;
         }
 
-        let walker = WalkDir::new(root).into_iter();
+        let walker = WalkBuilder::new(root).build();
 
         for result in walker.filter_map(|e| e.ok()) {
             let path = result.path();
@@ -157,11 +160,11 @@ pub fn find_flags(path: &Path, pattern: Option<String>) -> Result<SearchReport> 
 
     let mut report = SearchReport::new();
 
-    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkBuilder::new(path).build().filter_map(|e| e.ok()) {
         let entry_path = entry.path();
         if entry_path.is_file() {
             // Check file size
-            if let Ok(metadata) = std::fs::metadata(entry_path) {
+            if let Ok(metadata) = fs_err::metadata(entry_path) {
                 if metadata.len() > MAX_FILE_SIZE {
                     report.files_skipped += 1;
                     continue;
@@ -170,9 +173,9 @@ pub fn find_flags(path: &Path, pattern: Option<String>) -> Result<SearchReport> 
 
             if let Some(ext) = entry_path.extension().and_then(|s| s.to_str()) {
                 let result = match ext {
-                    "zip" => scan_zip(entry_path, &pattern_str),
-                    "tar" => scan_tar(entry_path, &pattern_str),
-                    "gz" | "tgz" => scan_tar_gz(entry_path, &pattern_str),
+                    "zip" => scan_zip(entry_path, pattern_str),
+                    "tar" => scan_tar(entry_path, pattern_str),
+                    "gz" | "tgz" => scan_tar_gz(entry_path, pattern_str),
                     _ => scan_file(entry_path, &matcher),
                 };
                 match result {

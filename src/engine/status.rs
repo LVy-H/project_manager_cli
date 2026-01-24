@@ -1,9 +1,9 @@
 use crate::config::Config;
 use anyhow::Result;
 use git2::{Repository, StatusOptions};
+use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 /// Status of a single git repository
 #[derive(Debug, Clone)]
@@ -60,12 +60,11 @@ pub fn show_status(config: &Config) -> Result<StatusReport> {
     }
 
     // Find all .git directories
-    let git_dirs: Vec<PathBuf> = WalkDir::new(&workspace)
-        .min_depth(1)
-        .max_depth(3)
-        .into_iter()
+    let git_dirs: Vec<PathBuf> = WalkBuilder::new(&workspace)
+        .max_depth(Some(3))
+        .build()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_dir() && e.file_name() == ".git")
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false) && e.file_name() == ".git")
         .filter_map(|e| e.path().parent().map(|p| p.to_path_buf()))
         .collect();
 

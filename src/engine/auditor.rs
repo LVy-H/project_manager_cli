@@ -1,11 +1,11 @@
 use crate::config::Config;
 use anyhow::Result;
+use fs_err as fs;
+use ignore::WalkBuilder;
 use infer;
 use rayon::prelude::*;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use walkdir::WalkDir;
 
 /// Information about a suspicious file extension
 #[derive(Debug, Clone)]
@@ -42,10 +42,10 @@ pub fn audit_workspace(config: &Config) -> Result<AuditReport> {
     }
 
     // Collect all entries
-    let entries: Vec<_> = WalkDir::new(&workspace_root)
-        .min_depth(1)
-        .into_iter()
+    let entries: Vec<_> = WalkBuilder::new(&workspace_root)
+        .build()
         .filter_map(|e| e.ok())
+        .filter(|e| e.depth() >= 1)
         .collect();
 
     let items_scanned = entries.len();

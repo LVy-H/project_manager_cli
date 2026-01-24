@@ -60,6 +60,11 @@ enum CtfCommands {
         )]
         category: Option<String>,
     },
+    /// Solve a challenge (commit, flag, compress, archive)
+    Solve {
+        /// The flag value
+        flag: String,
+    },
     /// Add a new challenge to current event
     Add {
         #[arg(help = "Category/Name (e.g. pwn/stack-buffer)")]
@@ -278,6 +283,9 @@ fn main() -> Result<()> {
             }
             CtfCommands::Import { file, category } => {
                 ctf::import_challenge(&config, file, category.clone())?;
+            }
+            CtfCommands::Solve { flag } => {
+                ctf::solve_challenge(&config, &flag)?;
             }
             CtfCommands::Add { path } => {
                 ctf::add_challenge(&config, path)?;

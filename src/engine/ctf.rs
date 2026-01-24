@@ -744,6 +744,109 @@ pub fn get_event_path(
     Ok(event_path)
 }
 
+pub fn solve_challenge(config: &Config, flag: &str) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    let dir_name = current_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Invalid directory name"))?;
+
+    let flag_path = current_dir.join("flag.txt");
+    fs::write(&flag_path, flag)?;
+    println!("✓ Saved flag to {:?}", flag_path);
+
+    println!("Committing changes...");
+    use std::process::Command;
+
+    let add_status = Command::new("git")
+        .arg("add")
+        .arg(".")
+        .current_dir(&current_dir)
+        .status()
+        .context("Failed to run git add")?;
+
+    if !add_status.success() {
+        anyhow::bail!("git add failed");
+    }
+
+    let commit_msg = format!("Solved: {} (Flag: {})", dir_name, flag);
+    let commit_status = Command::new("git")
+        .arg("commit")
+        .arg("-m")
+        .arg(&commit_msg)
+        .current_dir(&current_dir)
+        .status()
+        .context("Failed to run git commit")?;
+
+    if commit_status.success() {
+        println!("✓ Committed changes");
+    } else {
+        println!("! Git commit failed (nothing to commit?)");
+    }
+
+    println!("Compressing solution...");
+    let zip_path = current_dir.join("solution.zip");
+    create_zip(&current_dir, &zip_path)?;
+    println!("✓ Created solution.zip");
+
+    if let Some(category_dir) = current_dir.parent() {
+        if let Some(event_dir) = category_dir.parent() {
+            if event_dir.join(".ctf_meta.json").exists() {
+                let category_name = category_dir.file_name().unwrap().to_string_lossy();
+                let event_name = event_dir.file_name().unwrap().to_string_lossy();
+
+                let archives_root = config.resolve_path("archives").join("CTFs");
+                let target_dir = archives_root
+                    .join(event_name.as_ref())
+                    .join(category_name.as_ref())
+                    .join(dir_name);
+
+                if !target_dir.parent().unwrap().exists() {
+                    fs::create_dir_all(target_dir.parent().unwrap())?;
+                }
+
+                println!("Archiving to {:?}...", target_dir);
+
+                fs::rename(&current_dir, &target_dir)?;
+                println!("✓ Challenge archived. Note: Your current directory has been moved.");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn create_zip(src_dir: &Path, dest_file: &Path) -> Result<()> {
+    use ignore::WalkBuilder;
+    use std::io::{Read, Write};
+    use zip::write::FileOptions;
+
+    let file = fs::File::create(dest_file)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+
+    for entry in WalkBuilder::new(src_dir)
+        .hidden(false)
+        .git_ignore(true)
+        .build()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.is_file() && path != dest_file {
+            let name = path.strip_prefix(src_dir).unwrap();
+            zip.start_file(name.to_string_lossy(), options)?;
+            let mut f = fs::File::open(path)?;
+            let mut buffer = Vec::new();
+            f.read_to_end(&mut buffer)?;
+            zip.write_all(&buffer)?;
+        }
+    }
+    zip.finish()?;
+    Ok(())
+}
+
 /// Walk up directory tree to find CTF event root (containing .ctf_meta.json)
 pub fn find_event_root() -> Option<PathBuf> {
     let mut current = std::env::current_dir().ok()?;

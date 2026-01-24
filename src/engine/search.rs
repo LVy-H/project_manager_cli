@@ -5,7 +5,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
+use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::WalkBuilder;
 use std::io::Read;
 use std::path::{Path, PathBuf};

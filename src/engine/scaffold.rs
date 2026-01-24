@@ -1,7 +1,6 @@
 use crate::config::Config;
 use anyhow::Result;
 use fs_err as fs;
-use std::path::PathBuf;
 use std::process::Command;
 
 pub fn init_project(config: &Config, name: &str, project_type: &str) -> Result<()> {

@@ -10,8 +10,7 @@ use wardex::engine::{auditor, cleaner, ctf, scaffold, search, stats, status, und
 #[command(name = "wardex")]
 #[command(about = "Ward & index your workspace - CTF management, project organization, and more.", long_about = None)]
 struct Cli {
-    /// Path to config file (searches ~/.config/wardex/config.yaml if not specified)
-    #[arg(short, long, global = true)]
+    #[arg(long, value_name = "FILE", help = "Path to config file")]
     config: Option<PathBuf>,
 
     #[command(subcommand)]

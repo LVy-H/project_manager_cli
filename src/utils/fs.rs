@@ -1,10 +1,33 @@
 use anyhow::{Context, Result};
 use fs_extra::dir::CopyOptions as DirCopyOptions;
 use fs_extra::file::CopyOptions as FileCopyOptions;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::engine::undo;
+
+/// Expand a leading `~` or `~/…` to the user's home directory.
+/// Any other value is returned unchanged.
+///
+/// Shells normally expand `~` before the binary sees it, but completion
+/// systems (notably zsh's `_describe`) can backslash-quote the `~` so the
+/// literal character survives to runtime. Calling this on `PathBuf` args
+/// at the entry point makes wardex robust to that case.
+pub fn expand_tilde(path: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    } else if s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    path.to_path_buf()
+}
 
 /// Result of a move operation
 #[derive(Debug)]
@@ -57,4 +80,41 @@ pub fn move_item(
         success: true,
         used_copy_fallback: false, // fs_extra handles this internally
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_expands_home_prefix() {
+        let home = dirs::home_dir().expect("home dir available for this test");
+        assert_eq!(
+            expand_tilde(Path::new("~/foo/bar")),
+            home.join("foo").join("bar")
+        );
+        assert_eq!(expand_tilde(Path::new("~")), home);
+        assert_eq!(
+            expand_tilde(Path::new("/abs/path")),
+            PathBuf::from("/abs/path")
+        );
+        assert_eq!(
+            expand_tilde(Path::new("relative")),
+            PathBuf::from("relative")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_does_not_touch_embedded_tilde() {
+        // Only a *leading* `~/` or bare `~` is expanded; `~` later in the
+        // path is treated as a literal character (matches shell behavior).
+        assert_eq!(
+            expand_tilde(Path::new("/tmp/~foo")),
+            PathBuf::from("/tmp/~foo")
+        );
+        assert_eq!(
+            expand_tilde(Path::new("foo/~bar")),
+            PathBuf::from("foo/~bar")
+        );
+    }
 }

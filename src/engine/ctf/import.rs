@@ -7,10 +7,10 @@
 //! - **None**: Falls back to "misc"
 
 use crate::config::Config;
-use crate::utils::fs::move_item;
+use crate::utils::fs::{expand_tilde, move_item};
 use anyhow::Result;
 use fs_err as fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{add_solve_script, ChallengeMetadata};
 
@@ -32,7 +32,7 @@ struct CategoryGuess {
 
 pub fn import_challenge(
     config: &Config,
-    path: &PathBuf,
+    path: &Path,
     category_override: Option<String>,
     name_override: Option<String>,
     auto_mode: bool,
@@ -40,6 +40,12 @@ pub fn import_challenge(
     use dialoguer::{theme::ColorfulTheme, Input};
 
     let event_root = super::get_active_event_root()?;
+
+    // Defensive: shells normally expand `~`, but zsh's completion path can
+    // backslash-quote it so the literal `~` survives execve. Expanding here
+    // makes the runtime forgiving regardless of how the arg got to us.
+    let path = expand_tilde(path);
+    let path = path.as_path();
 
     if !path.exists() {
         anyhow::bail!(

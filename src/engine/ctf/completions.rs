@@ -9,26 +9,12 @@
 //! (missing config, malformed state, IO failure) silently degrades to empty.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap_complete::engine::CompletionCandidate;
 
 use crate::config::Config;
-
-/// Expand a leading `~` or `~/…` to the user's home directory.
-/// Any other value is returned unchanged.
-fn expand_tilde(raw: &str) -> PathBuf {
-    if let Some(rest) = raw.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    } else if raw == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    }
-    PathBuf::from(raw)
-}
+use crate::utils::fs::expand_tilde;
 
 /// Path completer for `PathBuf` args (`ctf import`, `--config`, `search`,
 /// `info`).
@@ -40,10 +26,19 @@ fn expand_tilde(raw: &str) -> PathBuf {
 /// user-home completion, listing every `/etc/passwd` account.
 ///
 /// Behaviour:
-/// * `~`           → suggest `~/` (one candidate; TAB expands, user continues)
-/// * `~/`, `~/foo` → list `$HOME` contents, keeping the `~/` prefix intact
+/// * `~`           → expand to `$HOME/` (one candidate; user continues typing)
+/// * `~/`, `~/foo` → list `$HOME` contents, **expanded to `$HOME/…`** in
+///   the candidate string
 /// * `/abs/foo`    → list matching entries under the absolute path
 /// * `rel/foo`, `foo`, `""` → list matching entries under cwd
+///
+/// Why we expand `~/` rather than preserving it: clap_complete's generated
+/// zsh wrapper feeds candidates through `_describe`, which calls `compadd`
+/// without `-Q`. zsh treats `~` as a filename-special char and
+/// backslash-quotes it on insertion — so `~/Do<TAB>` would land in the
+/// buffer as `\~/Downloads/`, and the literal `~` then survives execve to
+/// wardex, breaking `path.exists()`. Emitting the absolute path bypasses
+/// zsh's quoting entirely.
 ///
 /// Directories always included (so the user can descend) and get a
 /// trailing `/`. Files are filtered by `keep_file` — pass `|_| true` for
@@ -54,9 +49,13 @@ fn complete_path(
 ) -> Vec<CompletionCandidate> {
     let raw = current.to_string_lossy();
 
-    // Bare `~` → nudge into file completion instead of zsh user-name fallback.
+    // Bare `~` → expand to `$HOME/` so the shell can keep completing without
+    // hitting zsh's `~user` fallback (which would list /etc/passwd accounts).
     if raw == "~" {
-        return vec![CompletionCandidate::new("~/")];
+        if let Some(home) = dirs::home_dir() {
+            return vec![CompletionCandidate::new(format!("{}/", home.display()))];
+        }
+        return Vec::new();
     }
 
     let (dir_part, file_part) = match raw.rfind('/') {
@@ -64,23 +63,36 @@ fn complete_path(
         None => ("", raw.as_ref()),
     };
 
-    let search_root: PathBuf = if dir_part.is_empty() {
-        std::env::current_dir()
-            .ok()
-            .unwrap_or_else(|| PathBuf::from("."))
+    // Resolve the directory we'll scan, and the prefix we'll emit on
+    // candidates. They diverge when `dir_part` starts with `~/`: we scan
+    // `$HOME/…` but we *also* emit `$HOME/…` in the candidate so the shell
+    // doesn't see a literal `~` to quote.
+    let (search_root, emit_prefix): (PathBuf, String) = if dir_part.is_empty() {
+        (
+            std::env::current_dir()
+                .ok()
+                .unwrap_or_else(|| PathBuf::from(".")),
+            String::new(),
+        )
     } else if let Some(rest) = dir_part.strip_prefix("~/") {
         let Some(home) = dirs::home_dir() else {
             return Vec::new();
         };
-        // rest is like "Downloads/"; trim trailing `/` for clean join.
-        home.join(rest.trim_end_matches('/'))
+        let sub = rest.trim_end_matches('/');
+        let root = home.join(sub);
+        let prefix = if sub.is_empty() {
+            format!("{}/", home.display())
+        } else {
+            format!("{}/{}/", home.display(), sub)
+        };
+        (root, prefix)
     } else if dir_part.starts_with('/') {
-        PathBuf::from(dir_part)
+        (PathBuf::from(dir_part), dir_part.to_string())
     } else {
         let Ok(cwd) = std::env::current_dir() else {
             return Vec::new();
         };
-        cwd.join(dir_part)
+        (cwd.join(dir_part), dir_part.to_string())
     };
 
     let Ok(entries) = std::fs::read_dir(&search_root) else {
@@ -97,9 +109,12 @@ fn complete_path(
             }
             let path = entry.path();
             if path.is_dir() {
-                Some(CompletionCandidate::new(format!("{}{}/", dir_part, name)))
+                Some(CompletionCandidate::new(format!(
+                    "{}{}/",
+                    emit_prefix, name
+                )))
             } else if keep_file(&path) {
-                Some(CompletionCandidate::new(format!("{}{}", dir_part, name)))
+                Some(CompletionCandidate::new(format!("{}{}", emit_prefix, name)))
             } else {
                 None
             }
@@ -132,7 +147,7 @@ pub fn file_path_completer(current: &OsStr) -> Vec<CompletionCandidate> {
 /// exist — no hard-coded fallback to `~/workspace/1_Projects/CTFs`.
 fn resolve_ctf_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("WX_PATHS_CTF_ROOT") {
-        let path = expand_tilde(&dir);
+        let path = expand_tilde(Path::new(&dir));
         if path.exists() {
             return Some(path);
         }
@@ -400,24 +415,41 @@ mod tests {
     }
 
     #[test]
-    fn path_completer_bare_tilde_suggests_home_slash() {
-        // Regression: without this, zsh falls back to user-home (~user)
-        // completion and lists every /etc/passwd account.
+    #[serial_test::serial]
+    fn path_completer_bare_tilde_expands_to_home_slash() {
+        // Regression for two bugs at once:
+        //  1. Without a custom handler, zsh's `_files` fallback would list
+        //     /etc/passwd user accounts for `~<TAB>`.
+        //  2. Returning `~/` literally caused zsh's `_describe` /
+        //     compadd to backslash-quote the tilde on insertion, breaking
+        //     the path at runtime. Emit the expanded `$HOME/` instead.
+        let td = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", td.path());
+
         let results = any_path_completer(OsStr::new("~"));
         let names: Vec<String> = results
             .into_iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec!["~/".to_string()]);
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let expected = format!("{}/", td.path().display());
+        assert_eq!(names, vec![expected]);
     }
 
     #[test]
     #[serial_test::serial]
-    fn path_completer_tilde_slash_lists_home_entries() {
-        // `~/<TAB>` should produce candidates prefixed with `~/`.
-        // Stub $HOME so the test is hermetic — works identically on a
-        // developer box, CI, and inside the Nix build sandbox (where
-        // $HOME is a minimal empty tempdir by default).
+    fn path_completer_tilde_slash_emits_expanded_home() {
+        // `~/<TAB>` should produce candidates with the tilde **expanded**.
+        // The previous behavior preserved `~/` literally, which caused
+        // zsh's `_describe` to backslash-quote the `~` on insertion (so
+        // the user saw `\~/Downloads/` in the buffer and the literal `~`
+        // survived to wardex, breaking `path.exists()`).
         let td = tempfile::tempdir().unwrap();
         std::fs::create_dir(td.path().join("Downloads")).unwrap();
         std::fs::write(td.path().join("notes.txt"), b"").unwrap();
@@ -435,20 +467,67 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
 
+        let downloads = format!("{}/Downloads/", td.path().display());
+        let notes = format!("{}/notes.txt", td.path().display());
+
         assert!(
-            names.iter().any(|n| n == "~/Downloads/"),
-            "expected `~/Downloads/` in {:?}",
+            names.iter().any(|n| n == &downloads),
+            "expected expanded {:?} in {:?}",
+            downloads,
             names
         );
         assert!(
-            names.iter().any(|n| n == "~/notes.txt"),
-            "expected `~/notes.txt` in {:?}",
+            names.iter().any(|n| n == &notes),
+            "expected expanded {:?} in {:?}",
+            notes,
             names
         );
         for name in &names {
             assert!(
-                name.starts_with("~/"),
-                "expected `~/` prefix, got {:?}",
+                !name.starts_with('~'),
+                "candidates must not begin with `~` (zsh would quote it); got {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn path_completer_tilde_subpath_emits_expanded_home() {
+        // `~/Do<TAB>` should expand the tilde *and* keep the partial
+        // filename for prefix matching, then emit the absolute path.
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("Downloads")).unwrap();
+        std::fs::create_dir(td.path().join("Documents")).unwrap();
+        std::fs::create_dir(td.path().join("Music")).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", td.path());
+
+        let results = any_path_completer(OsStr::new("~/Do"));
+        let names: Vec<String> = results
+            .into_iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let downloads = format!("{}/Downloads/", td.path().display());
+        let documents = format!("{}/Documents/", td.path().display());
+        let music = format!("{}/Music/", td.path().display());
+
+        assert!(names.iter().any(|n| n == &downloads));
+        assert!(names.iter().any(|n| n == &documents));
+        assert!(
+            !names.iter().any(|n| n == &music),
+            "Music should not match `Do`"
+        );
+        for name in &names {
+            assert!(
+                !name.starts_with('~'),
+                "candidates must not begin with `~`; got {:?}",
                 name
             );
         }
@@ -470,14 +549,5 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n.ends_with("/sub/")));
         assert!(names.iter().any(|n| n.ends_with("/plain.txt")));
-    }
-
-    #[test]
-    fn expand_tilde_expands_home_prefix() {
-        let home = dirs::home_dir().expect("home dir available for this test");
-        assert_eq!(expand_tilde("~/foo/bar"), home.join("foo").join("bar"));
-        assert_eq!(expand_tilde("~"), home);
-        assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
-        assert_eq!(expand_tilde("relative"), PathBuf::from("relative"));
     }
 }

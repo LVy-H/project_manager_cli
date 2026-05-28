@@ -10,11 +10,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  # Fast feedback: fmt + clippy via the flake devshell. Uses the exact same
+  # toolchain as the build job below, eliminating the rustc-version drift
+  # between CI and devshell that hit alpha2 → alpha3 (see
+  # docs/plan/evaluation-alpha3.md § "CI health").
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v17
+        with:
+          name: wardex
+          # On PRs from forks the token is unavailable; cachix-action falls
+          # back to read-only mode automatically, so the build still benefits
+          # from the cache but cannot push new derivations.
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - run: nix develop --accept-flake-config --command bash -c 'cargo fmt --check'
+      - run: nix develop --accept-flake-config --command bash -c 'cargo clippy --all-targets --all-features -- -D warnings'
+
+  # Full build + tests via the flake. Pushes cargoArtifacts and the final
+  # wardex derivation to Cachix so end users / fresh machines fetch a
+  # prebuilt binary instead of compiling the dep graph from source.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v17
+        with:
+          name: wardex
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      # `nix flake check` builds checks.wardex which re-runs the integration
+      # test suite inside the build sandbox.
+      - run: nix flake check -L --accept-flake-config
+      - run: nix build -L --accept-flake-config

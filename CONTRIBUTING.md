@@ -220,6 +220,47 @@ cargo test ctf
 cargo test -- --nocapture
 ```
 
+## Cachix Binary Cache (maintainers)
+
+CI builds the flake on every push and pushes the resulting `cargoArtifacts`
++ `wardex` derivations to the `wardex` cache on Cachix. Cold-cache `nix
+build` for users (and for the maintainer on a fresh machine) then drops
+from ~5 min to a few seconds of fetch.
+
+### One-time setup (when the cache doesn't exist yet)
+
+1. Sign in at [cachix.org](https://app.cachix.org) (free for OSS).
+2. Create a cache named `wardex`. Cachix will display a *public signing
+   key* (e.g. `wardex.cachix.org-1:…`).
+3. Generate a *write auth token* under cache settings → "Auth tokens".
+4. In the GitHub repo: **Settings → Secrets → Actions**, add
+   `CACHIX_AUTH_TOKEN` with the value from step 3.
+5. (Optional, recommended) advertise the cache to end users by adding
+   `nixConfig` to `flake.nix`:
+
+   ```nix
+   nixConfig = {
+     extra-substituters = [ "https://wardex.cachix.org" ];
+     extra-trusted-public-keys = [ "wardex.cachix.org-1:..." ];  # public key from step 2
+   };
+   ```
+
+   With this in place, `nix run github:LVy-H/wardex` fetches the prebuilt
+   binary on cold cache (after the user accepts the flake-config trust
+   prompt — that's normal Nix behavior).
+
+### Using the cache locally without `nixConfig`
+
+Until step 5 is done (or for users who don't want to trust the per-flake
+config), they can wire the cache up globally with one command:
+
+```bash
+cachix use wardex
+```
+
+This appends the substituter + public key to their user-level
+`nix.conf`. Subsequent `nix build` commands fetch from the cache.
+
 ## Pull Request Guidelines
 
 1. **One feature per PR** - Keep changes focused

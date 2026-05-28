@@ -1,6 +1,17 @@
 {
   description = "Wardex - Ward & index your workspace: CTF management, project organization, and more";
 
+  # Advertise the project's Cachix cache. With this, `nix run
+  # github:LVy-H/wardex` on a cold machine fetches the prebuilt binary
+  # instead of compiling the full dep graph from source. Users are prompted
+  # to accept this config on first use (standard Nix trust behavior).
+  nixConfig = {
+    extra-substituters = [ "https://wardex.cachix.org" ];
+    extra-trusted-public-keys = [
+      "wardex.cachix.org-1:eh2m+FilW3nJgjryJTvANtK/R0pp5N42Eke4ta1l3LE="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
